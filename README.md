@@ -1,0 +1,2 @@
+# veturi
+Viewstamped Replication library
