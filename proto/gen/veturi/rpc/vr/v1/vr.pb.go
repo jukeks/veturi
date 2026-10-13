@@ -146,7 +146,7 @@ func (x *ProcessResponse) GetReply() []byte {
 type PrepareRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ViewNumber    uint64                 `protobuf:"varint,1,opt,name=view_number,json=viewNumber,proto3" json:"view_number,omitempty"`
-	Message       []byte                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Operation     []byte                 `protobuf:"bytes,2,opt,name=operation,proto3" json:"operation,omitempty"`
 	OpNumber      uint64                 `protobuf:"varint,3,opt,name=op_number,json=opNumber,proto3" json:"op_number,omitempty"`
 	CommitNumber  uint64                 `protobuf:"varint,4,opt,name=commit_number,json=commitNumber,proto3" json:"commit_number,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -190,9 +190,9 @@ func (x *PrepareRequest) GetViewNumber() uint64 {
 	return 0
 }
 
-func (x *PrepareRequest) GetMessage() []byte {
+func (x *PrepareRequest) GetOperation() []byte {
 	if x != nil {
-		return x.Message
+		return x.Operation
 	}
 	return nil
 }
@@ -444,11 +444,11 @@ const file_veturi_rpc_vr_v1_vr_proto_rawDesc = "" +
 	"\vview_number\x18\x01 \x01(\x04R\n" +
 	"viewNumber\x12%\n" +
 	"\x0erequest_number\x18\x02 \x01(\x04R\rrequestNumber\x12\x14\n" +
-	"\x05reply\x18\x03 \x01(\fR\x05reply\"\x8d\x01\n" +
+	"\x05reply\x18\x03 \x01(\fR\x05reply\"\x91\x01\n" +
 	"\x0ePrepareRequest\x12\x1f\n" +
 	"\vview_number\x18\x01 \x01(\x04R\n" +
-	"viewNumber\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\fR\amessage\x12\x1b\n" +
+	"viewNumber\x12\x1c\n" +
+	"\toperation\x18\x02 \x01(\fR\toperation\x12\x1b\n" +
 	"\top_number\x18\x03 \x01(\x04R\bopNumber\x12#\n" +
 	"\rcommit_number\x18\x04 \x01(\x04R\fcommitNumber\"\x11\n" +
 	"\x0fPrepareResponse\"m\n" +
