@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package veturi.rpc.vr.v1;
+
+option go_package = "github.com/jukeks/veturi/rpc/vr";
+
+service ClientService {
+  // synchronous i.e. response is returned as the rpc response
+  rpc Process(ProcessRequest) returns (ProcessResponse);
+}
+
+message ProcessRequest {
+  // Also REQUEST
+  uint64 request_number = 1;
+  uint64 client_id = 2;
+  bytes operation = 3;
+}
+
+message ProcessResponse {
+  // Also REPLY
+  uint64 view_number = 1;
+  uint64 request_number = 2;
+  bytes reply = 3;
+}
+
+service ReplicaService {
+  // Async i.e. responses are coming via a request to the other direction
+
+  // normal operations
+  rpc Prepare(PrepareRequest) returns (PrepareResponse);
+  rpc PrepareOK(PrepareOKRequest) returns (PrepareOKResponse);
+  rpc Commit(CommitRequest) returns (CommitResponse);
+
+  // view change
+
+  // recovery
+}
+
+message PrepareRequest {
+  uint64 view_number = 1;
+  bytes message = 2;
+  uint64 op_number = 3;
+  uint64 commit_number = 4;
+}
+message PrepareResponse {}
+
+message PrepareOKRequest {
+  uint64 view_number = 1;
+  uint64 op_number = 2;
+  uint64 backup_id = 3;
+}
+message PrepareOKResponse {}
+
+message CommitRequest {
+  uint64 commit_number = 1;
+  uint64 op_number = 2;
+}
+message CommitResponse {}

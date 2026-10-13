@@ -1,5 +1,11 @@
-.PHONY: test test-cover build
-default: build test
+.PHONY: proto test test-cover build
+default: proto build test
+
+proto:
+	cd proto && \
+		buf lint . && \
+		rm -fr ./gen && \
+		buf generate .
 
 test:
 	go test ./...
