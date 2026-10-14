@@ -8,7 +8,7 @@ proto:
 		buf generate .
 
 test:
-	go test -v ./...
+	go test -race -v ./...
 
 build:
 	cd cmd/node && \

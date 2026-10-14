@@ -111,7 +111,6 @@ func logContains(t *testing.T, r *Replica, req ProcessRequest) {
 
 func TestProcess(t *testing.T) {
 	tc, cleanup := createCluster(3)
-	defer cleanup()
 
 	operation := []byte("test1")
 	req := ProcessRequest{
@@ -121,6 +120,9 @@ func TestProcess(t *testing.T) {
 	}
 	replyChan := tc.replicas[0].Request(req)
 	reply := <-replyChan
+
+	cleanup()
+
 	if reply.RequestNumber != 123 {
 		t.Error("req number failed")
 	}
