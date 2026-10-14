@@ -100,6 +100,7 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 	client, ok := r.state.ClientTable[req.Operation.ClientId]
 	if !ok {
 		client = &Client{ReplyChans: map[RequestNumber]chan<- ProcessReply{}}
+		r.state.ClientTable[req.Operation.ClientId] = client
 	}
 	client.LatestRequestNumber = req.Operation.RequestNumber
 	client.LatestResult = nil
@@ -226,7 +227,7 @@ func (r *Replica) backupCommit(primaryCommitNumber CommitNumber) {
 		lastCommitable = CommitNumber(r.state.OpNumber)
 	}
 
-	for r.state.CommitNumber <= lastCommitable {
+	for r.state.CommitNumber < lastCommitable {
 		r.state.CommitNumber++
 
 		originalReq := r.state.Log[r.state.CommitNumber-1]

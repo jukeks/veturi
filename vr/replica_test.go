@@ -3,12 +3,14 @@ package vr
 import (
 	"bytes"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
 
 type TestingCluster struct {
 	replicas []*Replica
+	mu       sync.Mutex
 	state    map[ReplicaNumber][]Payload
 }
 
@@ -20,6 +22,9 @@ func NewTestingCluster() *TestingCluster {
 
 func (tc *TestingCluster) UpCallFor(i ReplicaNumber) UpCall {
 	return func(req Payload) Payload {
+		tc.mu.Lock()
+		defer tc.mu.Unlock()
+
 		tc.state[i] = append(tc.state[i], req)
 		return nil
 	}
@@ -115,33 +120,44 @@ func logContains(t *testing.T, r *Replica, req ProcessRequest) {
 func TestProcess(t *testing.T) {
 	tc, cleanup := createCluster(3, true)
 
-	operation := []byte("test1")
-	req := ProcessRequest{
-		RequestNumber: 123,
-		ClientId:      555,
-		Operation:     operation,
+	start := 123
+	reqs := []ProcessRequest{}
+	replies := []ProcessReply{}
+	for i := range 5 {
+		req := ProcessRequest{
+			RequestNumber: RequestNumber(start + i),
+			ClientId:      555,
+			Operation:     []byte(fmt.Sprintf("%d", i)),
+		}
+		reqs = append(reqs, req)
+
+		replyChan := tc.replicas[0].Request(req)
+		reply := <-replyChan
+		replies = append(replies, reply)
 	}
-	replyChan := tc.replicas[0].Request(req)
-	reply := <-replyChan
 
 	cleanup()
 
-	if reply.RequestNumber != 123 {
-		t.Error("req number failed")
-	}
-	if bytes.Equal(reply.Reply, operation) {
-		t.Error("operation failed")
+	for i := range len(reqs) {
+		req := reqs[i]
+		reply := replies[i]
+		if reply.RequestNumber != req.RequestNumber {
+			t.Error("req number failed")
+		}
+
+		for _, r := range tc.replicas {
+			logContains(t, r, req)
+		}
 	}
 
 	for _, r := range tc.replicas {
-		if r.state.OpNumber != 1 {
+		if r.state.OpNumber != 5 {
 			t.Errorf("wrong commit number %d at replica %d", r.state.CommitNumber, r.state.ReplicaNumber)
 		}
-		logContains(t, r, req)
 	}
 
 	primary := tc.replicas[0]
-	if primary.state.CommitNumber != 1 {
+	if primary.state.CommitNumber != 5 {
 		t.Errorf("primary did not commit")
 	}
 }
