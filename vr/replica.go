@@ -44,7 +44,9 @@ type ReplicaState struct {
 }
 
 func DefaultReplicaState() ReplicaState {
-	return ReplicaState{}
+	return ReplicaState{
+		ClientTable: map[ClientId]*Client{},
+	}
 }
 
 type Incoming struct {
@@ -78,8 +80,9 @@ type Replica struct {
 	upCall        UpCall
 }
 
-func NewReplica(clusterMembers []ReplicaConfiguration, upCall UpCall) *Replica {
+func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration, upCall UpCall) *Replica {
 	state := DefaultReplicaState()
+	state.ReplicaNumber = id
 	state.ClusterMembers = clusterMembers
 
 	return &Replica{
@@ -92,6 +95,15 @@ func NewReplica(clusterMembers []ReplicaConfiguration, upCall UpCall) *Replica {
 		inflight:      map[OpNumber]ReplyState{},
 		upCall:        upCall,
 	}
+}
+
+func (r *Replica) Request(req ProcessRequest) <-chan ProcessReply {
+	replyChan := make(chan ProcessReply, 1)
+	r.incoming <- Incoming{
+		Req:    &req,
+		Return: replyChan,
+	}
+	return replyChan
 }
 
 func (r *Replica) Run() {
@@ -133,12 +145,16 @@ func (r *Replica) peers() []ReplicaConfiguration {
 func (r *Replica) handleReq(incoming Incoming) {
 	switch req := incoming.Req.(type) {
 	case *ProcessRequest:
+		slog.Info("handleReq ProcessRequest", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
 		r.handleProcessRequest(req, incoming.Return)
 	case *Prepare:
+		slog.Info("handleReq Prepare", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
 		r.handlePrepare(incoming.From, req)
 	case *PrepareOK:
+		slog.Info("handleReq PrepareOK", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
 		r.handlePrepareOK(incoming.From, req)
 	case *Commit:
+		slog.Info("handleReq Commit", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
 		r.handleCommit(incoming.From, req)
 	default:
 		panic("lol")
@@ -174,6 +190,7 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, replyChan chan Proce
 	client, ok := r.state.ClientTable[req.ClientId]
 	if !ok {
 		client = &Client{ReplyChans: make(map[RequestNumber]chan<- ProcessReply)}
+		r.state.ClientTable[req.ClientId] = client
 	}
 	client.LatestRequestNumber = req.RequestNumber
 	client.LatestResult = nil
@@ -316,6 +333,7 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 		}
 
 		r.state.CommitNumber++
+		slog.Info("Committing", "commitNumber", r.state.CommitNumber)
 
 		delete(r.inflight, earliestOp)
 
@@ -330,7 +348,6 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 			RequestNumber: originalReq.RequestNumber,
 			Reply:         response,
 		}
-
 	}
 }
 
