@@ -95,8 +95,12 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 	r.primaryAlive = time.Now()
 
 	dos := viewChange.DoViewChanges
+	keys := make([]ReplicaNumber, 0, len(viewChange.DoViewChanges))
+	for rn := range viewChange.DoViewChanges {
+		keys = append(keys, rn)
+	}
 
-	highestLastView := dos[0]
+	highestLastView := dos[keys[0]]
 	for _, do := range dos {
 		if do.LastView > highestLastView.LastView {
 			highestLastView = do
