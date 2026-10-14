@@ -21,14 +21,14 @@ type (
 	RequestNumber uint64
 	ViewNumber    uint64
 	OpNumber      uint64
-	BackupId      uint64
+	ReplicaNumber uint64
 	ClientId      uint64
 	CommitNumber  uint64
 )
 
 type Prepare struct {
 	ViewNumber   ViewNumber
-	Operation    Payload
+	Operation    ProcessRequest
 	OpNumber     OpNumber
 	CommitNumber CommitNumber
 }
@@ -36,7 +36,7 @@ type Prepare struct {
 type PrepareOK struct {
 	ViewNumber ViewNumber
 	OpNumber   OpNumber
-	BackupId   BackupId
+	BackupId   ReplicaNumber
 }
 
 type Commit struct {
