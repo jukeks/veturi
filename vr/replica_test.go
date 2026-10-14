@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+	"time"
 )
 
 type TestingCluster struct {
@@ -59,7 +60,7 @@ func (tc *TestingCluster) Transport() chan<- bool {
 
 type CleanUp func()
 
-func createCluster(members int) (*TestingCluster, CleanUp) {
+func createCluster(members int, elected bool) (*TestingCluster, CleanUp) {
 	config := []ReplicaConfiguration{}
 	for i := range members {
 		config = append(config, ReplicaConfiguration{
@@ -75,9 +76,11 @@ func createCluster(members int) (*TestingCluster, CleanUp) {
 		replicas = append(replicas, NewReplica(id, config, tc.UpCallFor(id)))
 	}
 
-	replicas[0].state.Role = RolePrimary
-	replicas[1].state.Role = RoleBackup
-	replicas[2].state.Role = RoleBackup
+	if elected {
+		replicas[0].state.Role = RolePrimary
+		replicas[1].state.Role = RoleBackup
+		replicas[2].state.Role = RoleBackup
+	}
 
 	go replicas[0].Run()
 	go replicas[1].Run()
@@ -110,7 +113,7 @@ func logContains(t *testing.T, r *Replica, req ProcessRequest) {
 }
 
 func TestProcess(t *testing.T) {
-	tc, cleanup := createCluster(3)
+	tc, cleanup := createCluster(3, true)
 
 	operation := []byte("test1")
 	req := ProcessRequest{
@@ -140,5 +143,30 @@ func TestProcess(t *testing.T) {
 	primary := tc.replicas[0]
 	if primary.state.CommitNumber != 1 {
 		t.Errorf("primary did not commit")
+	}
+}
+
+func TestViewChange(t *testing.T) {
+	tc, cleanup := createCluster(3, false)
+	time.Sleep(1 * time.Second)
+	cleanup()
+
+	primaries := 0
+	backups := 0
+	for _, peer := range tc.replicas {
+		if peer.state.Role == RolePrimary {
+			primaries++
+		}
+		if peer.state.Role == RoleBackup {
+			backups++
+		}
+	}
+
+	if primaries != 1 {
+		t.Errorf("not 1 primary: %d", primaries)
+	}
+
+	if backups != 2 {
+		t.Errorf("not 2 backups: %d", backups)
 	}
 }

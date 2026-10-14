@@ -38,7 +38,7 @@ service ReplicaService {
 
 message PrepareRequest {
   uint64 view_number = 1;
-  bytes operation = 2;
+  ProcessRequest operation = 2;
   uint64 op_number = 3;
   uint64 commit_number = 4;
 }

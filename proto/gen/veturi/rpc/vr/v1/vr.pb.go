@@ -146,7 +146,7 @@ func (x *ProcessResponse) GetReply() []byte {
 type PrepareRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ViewNumber    uint64                 `protobuf:"varint,1,opt,name=view_number,json=viewNumber,proto3" json:"view_number,omitempty"`
-	Operation     []byte                 `protobuf:"bytes,2,opt,name=operation,proto3" json:"operation,omitempty"`
+	Operation     *ProcessRequest        `protobuf:"bytes,2,opt,name=operation,proto3" json:"operation,omitempty"`
 	OpNumber      uint64                 `protobuf:"varint,3,opt,name=op_number,json=opNumber,proto3" json:"op_number,omitempty"`
 	CommitNumber  uint64                 `protobuf:"varint,4,opt,name=commit_number,json=commitNumber,proto3" json:"commit_number,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -190,7 +190,7 @@ func (x *PrepareRequest) GetViewNumber() uint64 {
 	return 0
 }
 
-func (x *PrepareRequest) GetOperation() []byte {
+func (x *PrepareRequest) GetOperation() *ProcessRequest {
 	if x != nil {
 		return x.Operation
 	}
@@ -444,11 +444,11 @@ const file_veturi_rpc_vr_v1_vr_proto_rawDesc = "" +
 	"\vview_number\x18\x01 \x01(\x04R\n" +
 	"viewNumber\x12%\n" +
 	"\x0erequest_number\x18\x02 \x01(\x04R\rrequestNumber\x12\x14\n" +
-	"\x05reply\x18\x03 \x01(\fR\x05reply\"\x91\x01\n" +
+	"\x05reply\x18\x03 \x01(\fR\x05reply\"\xb3\x01\n" +
 	"\x0ePrepareRequest\x12\x1f\n" +
 	"\vview_number\x18\x01 \x01(\x04R\n" +
-	"viewNumber\x12\x1c\n" +
-	"\toperation\x18\x02 \x01(\fR\toperation\x12\x1b\n" +
+	"viewNumber\x12>\n" +
+	"\toperation\x18\x02 \x01(\v2 .veturi.rpc.vr.v1.ProcessRequestR\toperation\x12\x1b\n" +
 	"\top_number\x18\x03 \x01(\x04R\bopNumber\x12#\n" +
 	"\rcommit_number\x18\x04 \x01(\x04R\fcommitNumber\"\x11\n" +
 	"\x0fPrepareResponse\"m\n" +
@@ -494,19 +494,20 @@ var file_veturi_rpc_vr_v1_vr_proto_goTypes = []any{
 	(*CommitResponse)(nil),    // 7: veturi.rpc.vr.v1.CommitResponse
 }
 var file_veturi_rpc_vr_v1_vr_proto_depIdxs = []int32{
-	0, // 0: veturi.rpc.vr.v1.ClientService.Process:input_type -> veturi.rpc.vr.v1.ProcessRequest
-	2, // 1: veturi.rpc.vr.v1.ReplicaService.Prepare:input_type -> veturi.rpc.vr.v1.PrepareRequest
-	4, // 2: veturi.rpc.vr.v1.ReplicaService.PrepareOK:input_type -> veturi.rpc.vr.v1.PrepareOKRequest
-	6, // 3: veturi.rpc.vr.v1.ReplicaService.Commit:input_type -> veturi.rpc.vr.v1.CommitRequest
-	1, // 4: veturi.rpc.vr.v1.ClientService.Process:output_type -> veturi.rpc.vr.v1.ProcessResponse
-	3, // 5: veturi.rpc.vr.v1.ReplicaService.Prepare:output_type -> veturi.rpc.vr.v1.PrepareResponse
-	5, // 6: veturi.rpc.vr.v1.ReplicaService.PrepareOK:output_type -> veturi.rpc.vr.v1.PrepareOKResponse
-	7, // 7: veturi.rpc.vr.v1.ReplicaService.Commit:output_type -> veturi.rpc.vr.v1.CommitResponse
-	4, // [4:8] is the sub-list for method output_type
-	0, // [0:4] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: veturi.rpc.vr.v1.PrepareRequest.operation:type_name -> veturi.rpc.vr.v1.ProcessRequest
+	0, // 1: veturi.rpc.vr.v1.ClientService.Process:input_type -> veturi.rpc.vr.v1.ProcessRequest
+	2, // 2: veturi.rpc.vr.v1.ReplicaService.Prepare:input_type -> veturi.rpc.vr.v1.PrepareRequest
+	4, // 3: veturi.rpc.vr.v1.ReplicaService.PrepareOK:input_type -> veturi.rpc.vr.v1.PrepareOKRequest
+	6, // 4: veturi.rpc.vr.v1.ReplicaService.Commit:input_type -> veturi.rpc.vr.v1.CommitRequest
+	1, // 5: veturi.rpc.vr.v1.ClientService.Process:output_type -> veturi.rpc.vr.v1.ProcessResponse
+	3, // 6: veturi.rpc.vr.v1.ReplicaService.Prepare:output_type -> veturi.rpc.vr.v1.PrepareResponse
+	5, // 7: veturi.rpc.vr.v1.ReplicaService.PrepareOK:output_type -> veturi.rpc.vr.v1.PrepareOKResponse
+	7, // 8: veturi.rpc.vr.v1.ReplicaService.Commit:output_type -> veturi.rpc.vr.v1.CommitResponse
+	5, // [5:9] is the sub-list for method output_type
+	1, // [1:5] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_veturi_rpc_vr_v1_vr_proto_init() }

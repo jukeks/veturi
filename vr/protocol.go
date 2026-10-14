@@ -44,8 +44,32 @@ type Commit struct {
 	OpNumber     OpNumber
 }
 
-func (*Prepare) request()        {}
-func (*PrepareOK) request()      {}
-func (*Commit) request()         {}
-func (*ProcessRequest) request() {}
-func (*ProcessReply) request()   {}
+type StartViewChange struct {
+	ViewNumber    ViewNumber
+	ReplicaNumber ReplicaNumber
+}
+
+type DoViewChange struct {
+	ViewNumber    ViewNumber
+	Log           []*ProcessRequest
+	LastView      ViewNumber
+	OpNumber      OpNumber
+	CommitNumber  CommitNumber
+	ReplicaNumber ReplicaNumber
+}
+
+type StartView struct {
+	ViewNumber   ViewNumber
+	Log          []*ProcessRequest
+	OpNumber     OpNumber
+	CommitNumber CommitNumber
+}
+
+func (*Prepare) request()         {}
+func (*PrepareOK) request()       {}
+func (*Commit) request()          {}
+func (*ProcessRequest) request()  {}
+func (*ProcessReply) request()    {}
+func (*StartViewChange) request() {}
+func (*DoViewChange) request()    {}
+func (*StartView) request()       {}
