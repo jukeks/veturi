@@ -205,8 +205,8 @@ func (r *Replica) handleTick() {
 	if r.state.Role == RolePrimary {
 		for _, peer := range r.peers() {
 			r.sendPeer(peer, &Commit{
+				ViewNumber:   r.state.ViewNumber,
 				CommitNumber: r.state.CommitNumber,
-				OpNumber:     r.state.OpNumber,
 			})
 		}
 	} else {
@@ -214,4 +214,21 @@ func (r *Replica) handleTick() {
 			r.initiateViewChange()
 		}
 	}
+}
+
+func (r *Replica) checkView(reqView ViewNumber) bool {
+	if r.state.ViewNumber > reqView {
+		slog.Info("req from older view, dropping")
+		return true
+	}
+	if r.state.ViewNumber < reqView {
+		r.state.Role = RoleBackup
+		r.state.ViewNumber = reqView
+		r.state.OpNumber = OpNumber(r.state.CommitNumber)
+		r.state.Log = r.state.Log[:r.state.OpNumber]
+		clear(r.inflight)
+		// do state transfer
+	}
+
+	return false
 }

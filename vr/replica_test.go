@@ -162,7 +162,7 @@ func TestProcess(t *testing.T) {
 	}
 }
 
-func TestViewChange(t *testing.T) {
+func TestInitialViewChange(t *testing.T) {
 	tc, cleanup := createCluster(3, false)
 	time.Sleep(1 * time.Second)
 	cleanup()
@@ -185,4 +185,47 @@ func TestViewChange(t *testing.T) {
 	if backups != 2 {
 		t.Errorf("not 2 backups: %d", backups)
 	}
+}
+
+func TestViewChange(t *testing.T) {
+	tc, cleanup := createCluster(3, false)
+	time.Sleep(1 * time.Second)
+	for _, replica := range tc.replicas {
+		replica.Stop()
+	}
+
+	primary := tc.replicas[0]
+	for _, replica := range tc.replicas {
+		if replica.state.Role == RolePrimary {
+			primary = replica
+			break
+		}
+	}
+
+	backups := []*Replica{}
+	for _, replica := range tc.replicas {
+		if replica != primary {
+			go replica.Run()
+			backups = append(backups, replica)
+		}
+	}
+
+	time.Sleep(1 * time.Second)
+	var newPrimary *Replica
+	for _, replica := range backups {
+		replica.Stop()
+		if replica.state.Role == RolePrimary {
+			newPrimary = replica
+			break
+		}
+	}
+
+	if newPrimary == nil {
+		t.Error("no new primary")
+	}
+
+	for _, replica := range tc.replicas {
+		go replica.Run()
+	}
+	cleanup()
 }

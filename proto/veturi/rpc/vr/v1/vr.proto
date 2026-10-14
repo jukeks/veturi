@@ -52,7 +52,7 @@ message PrepareOKRequest {
 message PrepareOKResponse {}
 
 message CommitRequest {
-  uint64 commit_number = 1;
-  uint64 op_number = 2;
+  uint64 view_number = 1;
+  uint64 commit_number = 2;
 }
 message CommitResponse {}

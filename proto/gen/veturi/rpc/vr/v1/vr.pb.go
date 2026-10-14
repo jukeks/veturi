@@ -345,8 +345,8 @@ func (*PrepareOKResponse) Descriptor() ([]byte, []int) {
 
 type CommitRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommitNumber  uint64                 `protobuf:"varint,1,opt,name=commit_number,json=commitNumber,proto3" json:"commit_number,omitempty"`
-	OpNumber      uint64                 `protobuf:"varint,2,opt,name=op_number,json=opNumber,proto3" json:"op_number,omitempty"`
+	ViewNumber    uint64                 `protobuf:"varint,1,opt,name=view_number,json=viewNumber,proto3" json:"view_number,omitempty"`
+	CommitNumber  uint64                 `protobuf:"varint,2,opt,name=commit_number,json=commitNumber,proto3" json:"commit_number,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -381,16 +381,16 @@ func (*CommitRequest) Descriptor() ([]byte, []int) {
 	return file_veturi_rpc_vr_v1_vr_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *CommitRequest) GetCommitNumber() uint64 {
+func (x *CommitRequest) GetViewNumber() uint64 {
 	if x != nil {
-		return x.CommitNumber
+		return x.ViewNumber
 	}
 	return 0
 }
 
-func (x *CommitRequest) GetOpNumber() uint64 {
+func (x *CommitRequest) GetCommitNumber() uint64 {
 	if x != nil {
-		return x.OpNumber
+		return x.CommitNumber
 	}
 	return 0
 }
@@ -457,10 +457,11 @@ const file_veturi_rpc_vr_v1_vr_proto_rawDesc = "" +
 	"viewNumber\x12\x1b\n" +
 	"\top_number\x18\x02 \x01(\x04R\bopNumber\x12\x1b\n" +
 	"\tbackup_id\x18\x03 \x01(\x04R\bbackupId\"\x13\n" +
-	"\x11PrepareOKResponse\"Q\n" +
-	"\rCommitRequest\x12#\n" +
-	"\rcommit_number\x18\x01 \x01(\x04R\fcommitNumber\x12\x1b\n" +
-	"\top_number\x18\x02 \x01(\x04R\bopNumber\"\x10\n" +
+	"\x11PrepareOKResponse\"U\n" +
+	"\rCommitRequest\x12\x1f\n" +
+	"\vview_number\x18\x01 \x01(\x04R\n" +
+	"viewNumber\x12#\n" +
+	"\rcommit_number\x18\x02 \x01(\x04R\fcommitNumber\"\x10\n" +
 	"\x0eCommitResponse2_\n" +
 	"\rClientService\x12N\n" +
 	"\aProcess\x12 .veturi.rpc.vr.v1.ProcessRequest\x1a!.veturi.rpc.vr.v1.ProcessResponse2\x83\x02\n" +

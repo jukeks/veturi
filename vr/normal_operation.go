@@ -68,7 +68,9 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 		slog.Info("Can't process requests")
 		return
 	}
-
+	if r.checkView(req.ViewNumber) {
+		return
+	}
 	if r.state.Role != RoleBackup {
 		slog.Info("prepare: reached primary, dropping")
 		return
@@ -141,6 +143,7 @@ func (r *Replica) handleEarlyPrepares() {
 		client, ok := r.state.ClientTable[req.Operation.ClientId]
 		if !ok {
 			client = &Client{} // backup doesn't handle replies
+			r.state.ClientTable[req.Operation.ClientId] = client
 		}
 		client.LatestRequestNumber = req.Operation.RequestNumber
 		client.LatestResult = nil
@@ -166,6 +169,10 @@ func (r *Replica) earliestUncommittedOpWithQuorum() OpNumber {
 }
 
 func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
+	if r.checkView(req.ViewNumber) {
+		return
+	}
+
 	replyState, ok := r.inflight[req.OpNumber]
 	if !ok {
 		slog.Info("got PrepareOK for unknown op", "PrepareOK", req)
@@ -206,6 +213,9 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 }
 
 func (r *Replica) handleCommit(_ ReplicaConfiguration, req *Commit) {
+	if r.checkView(req.ViewNumber) {
+		return
+	}
 	if r.state.Role != RoleBackup {
 		slog.Info("got commit as a primary")
 		return

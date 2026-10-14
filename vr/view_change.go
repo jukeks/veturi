@@ -17,6 +17,8 @@ func NewViewChange() *ViewChange {
 func (r *Replica) initiateViewChange() {
 	r.state.Status = StatusViewChange
 	r.state.ViewNumber++
+	r.primaryAlive = time.Now()
+	r.state.Role = RoleBackup
 
 	for _, peer := range r.peers() {
 		r.sendPeer(peer, &StartViewChange{
@@ -31,6 +33,11 @@ func (r *Replica) getPrimaryForView(view ViewNumber) ReplicaConfiguration {
 }
 
 func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartViewChange) {
+	if req.ViewNumber < r.state.ViewNumber {
+		// older view change
+		return
+	}
+
 	viewChange, ok := r.viewChanges[req.ViewNumber]
 	if !ok {
 		viewChange = NewViewChange()
@@ -41,6 +48,8 @@ func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartVie
 	if req.ViewNumber > r.state.ViewNumber {
 		r.state.Status = StatusViewChange
 		r.state.ViewNumber = req.ViewNumber
+		r.primaryAlive = time.Now()
+		r.state.Role = RoleBackup
 
 		for _, peer := range r.peers() {
 			r.sendPeer(peer, &StartViewChange{
@@ -69,6 +78,8 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 	if req.ViewNumber > r.state.ViewNumber {
 		r.state.Status = StatusViewChange
 		r.state.ViewNumber = req.ViewNumber
+		r.primaryAlive = time.Now()
+		r.state.Role = RoleBackup
 
 		for _, peer := range r.peers() {
 			r.sendPeer(peer, &StartViewChange{
@@ -76,6 +87,14 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 				ReplicaNumber: r.state.ReplicaNumber,
 			})
 		}
+	}
+	if r.state.Status == StatusNormal {
+		// view change already concluded
+		return
+	}
+	if req.ViewNumber < r.state.ViewNumber {
+		// older view change
+		return
 	}
 
 	viewChange, ok := r.viewChanges[req.ViewNumber]
@@ -91,6 +110,7 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 
 	r.state.ViewNumber = req.ViewNumber
 	r.state.Status = StatusNormal
+	r.lastNormalView = r.state.ViewNumber
 	r.state.Role = RolePrimary
 	r.primaryAlive = time.Now()
 
@@ -125,15 +145,17 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 	r.state.CommitNumber = highest.CommitNumber
 	r.state.Log = highest.Log
 
-	if len(r.state.Log) > 0 {
-		for cur := lastCommit; cur <= OpNumber(r.state.CommitNumber); cur++ {
-			originalReq := r.state.Log[cur-1]
-			response := r.upCall(originalReq.Operation)
+	for cur := lastCommit + 1; cur <= OpNumber(r.state.CommitNumber); cur++ {
+		originalReq := r.state.Log[cur-1]
+		response := r.upCall(originalReq.Operation)
 
-			client := r.state.ClientTable[originalReq.ClientId]
-			client.LatestRequestNumber = originalReq.RequestNumber
-			client.LatestResult = response
-		}
+		client := r.state.ClientTable[originalReq.ClientId]
+		client.LatestRequestNumber = originalReq.RequestNumber
+		client.LatestResult = response
+	}
+
+	for cur := OpNumber(r.state.CommitNumber + 1); cur <= r.state.OpNumber; cur++ {
+		r.inflight[cur] = ReplyState{}
 	}
 
 	for _, peer := range r.peers() {
@@ -147,27 +169,31 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 }
 
 func (r *Replica) handleStartView(from ReplicaConfiguration, req *StartView) {
+	if req.ViewNumber < r.state.ViewNumber ||
+		(req.ViewNumber == r.state.ViewNumber && r.state.Status == StatusNormal) {
+		return
+	}
+
 	r.state.ViewNumber = req.ViewNumber
 	r.state.Status = StatusNormal
+	r.lastNormalView = r.state.ViewNumber
 	r.state.Role = RoleBackup
 	r.primaryAlive = time.Now()
 	r.state.Log = req.Log
 	r.state.OpNumber = req.OpNumber
 
-	if len(r.state.Log) > 0 {
-		for cur := OpNumber(r.state.CommitNumber); cur <= OpNumber(req.CommitNumber); cur++ {
-			originalReq := r.state.Log[cur-1]
-			response := r.upCall(originalReq.Operation)
+	for cur := OpNumber(r.state.CommitNumber) + 1; cur <= OpNumber(req.CommitNumber); cur++ {
+		originalReq := r.state.Log[cur-1]
+		response := r.upCall(originalReq.Operation)
 
-			client := r.state.ClientTable[originalReq.ClientId]
-			client.LatestRequestNumber = originalReq.RequestNumber
-			client.LatestResult = response
-			r.sendPeer(from, &PrepareOK{
-				ViewNumber: r.state.ViewNumber,
-				OpNumber:   cur,
-				BackupId:   r.state.ReplicaNumber,
-			})
-		}
+		client := r.state.ClientTable[originalReq.ClientId]
+		client.LatestRequestNumber = originalReq.RequestNumber
+		client.LatestResult = response
+		r.sendPeer(from, &PrepareOK{
+			ViewNumber: r.state.ViewNumber,
+			OpNumber:   cur,
+			BackupId:   r.state.ReplicaNumber,
+		})
 	}
 
 	r.state.CommitNumber = req.CommitNumber

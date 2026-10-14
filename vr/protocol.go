@@ -40,8 +40,8 @@ type PrepareOK struct {
 }
 
 type Commit struct {
+	ViewNumber   ViewNumber
 	CommitNumber CommitNumber
-	OpNumber     OpNumber
 }
 
 type StartViewChange struct {
