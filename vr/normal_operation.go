@@ -204,16 +204,21 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 		client := r.state.ClientTable[originalReq.ClientId]
 		client.LatestRequestNumber = originalReq.RequestNumber
 		client.LatestResult = response
-		client.ReplyChans[originalReq.RequestNumber] <- ProcessReply{
-			ViewNumber:    r.state.ViewNumber,
-			RequestNumber: originalReq.RequestNumber,
-			Reply:         response,
+		if replyChan := client.ReplyChans[originalReq.RequestNumber]; replyChan != nil {
+			replyChan <- ProcessReply{
+				ViewNumber:    r.state.ViewNumber,
+				RequestNumber: originalReq.RequestNumber,
+				Reply:         response,
+			}
 		}
 	}
 }
 
 func (r *Replica) handleCommit(_ ReplicaConfiguration, req *Commit) {
 	if r.checkView(req.ViewNumber) {
+		return
+	}
+	if r.state.Status != StatusNormal {
 		return
 	}
 	if r.state.Role != RoleBackup {

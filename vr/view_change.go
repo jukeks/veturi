@@ -149,13 +149,19 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 		originalReq := r.state.Log[cur-1]
 		response := r.upCall(originalReq.Operation)
 
-		client := r.state.ClientTable[originalReq.ClientId]
+		client, ok := r.state.ClientTable[originalReq.ClientId]
+		if !ok {
+			client = &Client{}
+			r.state.ClientTable[originalReq.ClientId] = client
+		}
 		client.LatestRequestNumber = originalReq.RequestNumber
 		client.LatestResult = response
 	}
 
 	for cur := OpNumber(r.state.CommitNumber + 1); cur <= r.state.OpNumber; cur++ {
-		r.inflight[cur] = ReplyState{}
+		r.inflight[cur] = ReplyState{oks: map[ReplicaNumber]bool{
+			r.state.ReplicaNumber: true,
+		}}
 	}
 
 	for _, peer := range r.peers() {
