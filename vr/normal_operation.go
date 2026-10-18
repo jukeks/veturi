@@ -37,10 +37,6 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 	r.state.Log = append(r.state.Log, req)
 	r.state.OpNumber++
 
-	client := r.state.getClient(req.ClientId)
-	client.LatestRequestNumber = req.RequestNumber
-	client.LatestResult = nil
-
 	r.inflight[r.state.OpNumber] = ReplyState{oks: map[ReplicaNumber]bool{
 		r.state.ReplicaNumber: true,
 	}}
@@ -95,10 +91,6 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 	r.state.Log = append(r.state.Log, &req.Operation)
 	r.state.OpNumber++
 
-	client := r.state.getClient(req.Operation.ClientId)
-	client.LatestRequestNumber = req.Operation.RequestNumber
-	client.LatestResult = nil
-
 	r.handleEarlyPrepares()
 	r.backupCommit(req.CommitNumber)
 
@@ -132,10 +124,6 @@ func (r *Replica) handleEarlyPrepares() {
 
 		r.state.Log = append(r.state.Log, &req.Operation)
 		r.state.OpNumber++
-
-		client := r.state.getClient(req.Operation.ClientId)
-		client.LatestRequestNumber = req.Operation.RequestNumber
-		client.LatestResult = nil
 	}
 }
 
@@ -182,22 +170,9 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 			break
 		}
 
-		r.state.CommitNumber++
-		slog.Info("Committing", "commitNumber", r.state.CommitNumber)
-
 		delete(r.inflight, earliestOp)
 
-		originalReq := r.state.Log[r.state.CommitNumber-1]
-		response := r.upCall(originalReq.Operation)
-
-		client := r.state.getClient(originalReq.ClientId)
-		client.LatestRequestNumber = originalReq.RequestNumber
-		client.LatestResult = response
-		r.sendClient(originalReq.ClientId, &ProcessReply{
-			ViewNumber:    r.state.ViewNumber,
-			RequestNumber: originalReq.RequestNumber,
-			Reply:         response,
-		})
+		r.commitUpTo(CommitNumber(earliestOp))
 	}
 }
 
@@ -229,5 +204,5 @@ func (r *Replica) backupCommit(primaryCommitNumber CommitNumber) {
 		lastCommitable = CommitNumber(r.state.OpNumber)
 	}
 
-	r.executeUpTo(lastCommitable)
+	r.commitUpTo(lastCommitable)
 }

@@ -301,7 +301,7 @@ func (r *Replica) startNormal(v ViewNumber, role ReplicaRole, log []*ProcessRequ
 	r.state.Log = nil
 	r.state.Log = append(r.state.Log, log...)
 	r.state.OpNumber = op
-	r.executeUpTo(commit)
+	r.commitUpTo(commit)
 
 	for n := OpNumber(r.state.CommitNumber) + 1; n <= op; n++ {
 		if role == RolePrimary {
@@ -320,7 +320,7 @@ func (r *Replica) moveToNewerView(v ViewNumber) {
 	// TODO: send GETSTATE; after NEWSTATE, set lastNormalView = v
 }
 
-func (r *Replica) executeUpTo(commit CommitNumber) {
+func (r *Replica) commitUpTo(commit CommitNumber) {
 	for r.state.CommitNumber < commit {
 		r.state.CommitNumber++
 		req := r.state.Log[r.state.CommitNumber-1]
@@ -329,5 +329,13 @@ func (r *Replica) executeUpTo(commit CommitNumber) {
 		client := r.state.getClient(req.ClientId)
 		client.LatestRequestNumber = req.RequestNumber
 		client.LatestResult = response
+
+		if r.state.Role == RolePrimary {
+			r.sendClient(req.ClientId, &ProcessReply{
+				ViewNumber:    r.state.ViewNumber,
+				RequestNumber: req.RequestNumber,
+				Reply:         response,
+			})
+		}
 	}
 }
