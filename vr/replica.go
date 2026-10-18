@@ -33,13 +33,10 @@ const (
 type Client struct {
 	LatestRequestNumber RequestNumber
 	LatestResult        Payload
-	ReplyChans          map[RequestNumber]chan<- ProcessReply
 }
 
 func NewClient() *Client {
-	return &Client{
-		ReplyChans: map[RequestNumber]chan<- ProcessReply{},
-	}
+	return &Client{}
 
 }
 
@@ -71,17 +68,41 @@ func (s *ReplicaState) getClient(id ClientId) *Client {
 	return client
 }
 
-type Incoming struct {
-	// either From or Return
-	From   ReplicaConfiguration
-	Return chan ProcessReply
+type CorrespondendType int
 
-	Req Request
+const (
+	CorrespondentClient CorrespondendType = iota
+	CorrespondentPeer
+)
+
+type Correspondend struct {
+	Type   CorrespondendType
+	Peer   ReplicaConfiguration
+	Client ClientId
+}
+
+func ClientCorrespondent(id ClientId) Correspondend {
+	return Correspondend{
+		Type:   CorrespondentClient,
+		Client: id,
+	}
+}
+
+func PeerCorrespondent(peer ReplicaConfiguration) Correspondend {
+	return Correspondend{
+		Type: CorrespondentPeer,
+		Peer: peer,
+	}
+}
+
+type Incoming struct {
+	From Correspondend
+	Req  Request
 }
 
 type Outgoing struct {
-	Target ReplicaConfiguration
-	Req    Request
+	To  Correspondend
+	Req Request
 }
 
 type ReplyState struct {
@@ -125,13 +146,11 @@ func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration, upCall 
 	}
 }
 
-func (r *Replica) Request(req ProcessRequest) <-chan ProcessReply {
-	replyChan := make(chan ProcessReply, 1)
+func (r *Replica) Request(req ProcessRequest, from ClientId) {
 	r.incoming <- Incoming{
-		Req:    &req,
-		Return: replyChan,
+		Req:  &req,
+		From: ClientCorrespondent(from),
 	}
-	return replyChan
 }
 
 func (r *Replica) Run() {
@@ -186,25 +205,25 @@ func (r *Replica) handleReq(incoming Incoming) {
 	switch req := incoming.Req.(type) {
 	case *ProcessRequest:
 		slog.Info("handleReq ProcessRequest", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleProcessRequest(req, incoming.Return)
+		r.handleProcessRequest(req, incoming.From.Client)
 	case *Prepare:
 		slog.Info("handleReq Prepare", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handlePrepare(incoming.From, req)
+		r.handlePrepare(incoming.From.Peer, req)
 	case *PrepareOK:
 		slog.Info("handleReq PrepareOK", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handlePrepareOK(incoming.From, req)
+		r.handlePrepareOK(incoming.From.Peer, req)
 	case *Commit:
 		slog.Info("handleReq Commit", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleCommit(incoming.From, req)
+		r.handleCommit(incoming.From.Peer, req)
 	case *StartViewChange:
 		slog.Info("handleReq StartViewChange", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleStartViewChange(incoming.From, req)
+		r.handleStartViewChange(incoming.From.Peer, req)
 	case *DoViewChange:
 		slog.Info("handleReq DoViewChange", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleDoViewChange(incoming.From, req)
+		r.handleDoViewChange(incoming.From.Peer, req)
 	case *StartView:
 		slog.Info("handleReq StartView", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleStartView(incoming.From, req)
+		r.handleStartView(incoming.From.Peer, req)
 	default:
 		panic("lol")
 	}
@@ -212,8 +231,15 @@ func (r *Replica) handleReq(incoming Incoming) {
 
 func (r *Replica) sendPeer(peer ReplicaConfiguration, req Request) {
 	r.outgoing <- Outgoing{
-		Target: peer,
-		Req:    req,
+		To:  PeerCorrespondent(peer),
+		Req: req,
+	}
+}
+
+func (r *Replica) sendClient(client ClientId, req Request) {
+	r.outgoing <- Outgoing{
+		To:  ClientCorrespondent(client),
+		Req: req,
 	}
 }
 

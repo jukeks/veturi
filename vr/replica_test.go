@@ -10,13 +10,19 @@ import (
 
 type TestingCluster struct {
 	replicas []*Replica
+	clients  map[ClientId]TestingClient
 	mu       sync.Mutex
 	state    map[ReplicaNumber][]Payload
 }
 
-func NewTestingCluster() *TestingCluster {
+type TestingClient struct {
+	replyChan chan *ProcessReply
+}
+
+func NewTestingCluster(clients map[ClientId]TestingClient) *TestingCluster {
 	return &TestingCluster{
-		state: map[ReplicaNumber][]Payload{},
+		state:   map[ReplicaNumber][]Payload{},
+		clients: clients,
 	}
 }
 
@@ -42,10 +48,16 @@ func (tc *TestingCluster) Transport() chan<- bool {
 				for {
 					select {
 					case outgoing := <-replica.outgoing:
-						targetReplica := tc.replicas[outgoing.Target.ID]
-						targetReplica.incoming <- Incoming{
-							From: config,
-							Req:  outgoing.Req,
+						if outgoing.To.Type == CorrespondentPeer {
+							targetReplica := tc.replicas[outgoing.To.Peer.ID]
+							targetReplica.incoming <- Incoming{
+								From: PeerCorrespondent(config),
+								Req:  outgoing.Req,
+							}
+						} else {
+							client := tc.clients[outgoing.To.Client]
+							reply := outgoing.Req.(*ProcessReply)
+							client.replyChan <- reply
 						}
 					case <-stop:
 						return
@@ -65,7 +77,7 @@ func (tc *TestingCluster) Transport() chan<- bool {
 
 type CleanUp func()
 
-func createCluster(members int, elected bool) (*TestingCluster, CleanUp) {
+func createCluster(members int, elected bool, clientIds []ClientId) (*TestingCluster, CleanUp) {
 	config := []ReplicaConfiguration{}
 	for i := range members {
 		config = append(config, ReplicaConfiguration{
@@ -74,7 +86,14 @@ func createCluster(members int, elected bool) (*TestingCluster, CleanUp) {
 		})
 	}
 
-	tc := NewTestingCluster()
+	clients := map[ClientId]TestingClient{}
+	for _, id := range clientIds {
+		clients[id] = TestingClient{
+			replyChan: make(chan *ProcessReply),
+		}
+	}
+
+	tc := NewTestingCluster(clients)
 	replicas := []*Replica{}
 	for i := range members {
 		id := ReplicaNumber(i)
@@ -118,20 +137,22 @@ func logContains(t *testing.T, r *Replica, req ProcessRequest) {
 }
 
 func TestProcess(t *testing.T) {
-	tc, cleanup := createCluster(3, true)
+	clientId := ClientId(555)
+	tc, cleanup := createCluster(3, true, []ClientId{clientId})
 
 	start := 123
 	reqs := []ProcessRequest{}
-	replies := []ProcessReply{}
+	replies := []*ProcessReply{}
 	for i := range 5 {
 		req := ProcessRequest{
 			RequestNumber: RequestNumber(start + i),
-			ClientId:      555,
+			ClientId:      clientId,
 			Operation:     []byte(fmt.Sprintf("%d", i)),
 		}
 		reqs = append(reqs, req)
 
-		replyChan := tc.replicas[0].Request(req)
+		tc.replicas[0].Request(req, clientId)
+		replyChan := tc.clients[clientId].replyChan
 		reply := <-replyChan
 		replies = append(replies, reply)
 	}
@@ -163,7 +184,7 @@ func TestProcess(t *testing.T) {
 }
 
 func TestInitialViewChange(t *testing.T) {
-	tc, cleanup := createCluster(3, false)
+	tc, cleanup := createCluster(3, false, nil)
 	time.Sleep(1 * time.Second)
 	cleanup()
 
@@ -188,7 +209,7 @@ func TestInitialViewChange(t *testing.T) {
 }
 
 func TestViewChange(t *testing.T) {
-	tc, cleanup := createCluster(3, false)
+	tc, cleanup := createCluster(3, false, nil)
 	time.Sleep(1 * time.Second)
 	for _, replica := range tc.replicas {
 		replica.Stop()

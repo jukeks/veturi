@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func (r *Replica) handleProcessRequest(req *ProcessRequest, replyChan chan ProcessReply) {
+func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 	if r.state.Status != StatusNormal {
 		slog.Info("Can't process requests")
 		return
@@ -20,11 +20,11 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, replyChan chan Proce
 	lastClientState, ok := r.state.ClientTable[req.ClientId]
 	if ok {
 		if lastClientState.LatestRequestNumber == req.RequestNumber {
-			replyChan <- ProcessReply{
+			r.sendClient(from, &ProcessReply{
 				ViewNumber:    r.state.ViewNumber,
 				RequestNumber: lastClientState.LatestRequestNumber,
 				Reply:         lastClientState.LatestResult,
-			}
+			})
 			return
 		}
 		if lastClientState.LatestRequestNumber > req.RequestNumber {
@@ -40,7 +40,6 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, replyChan chan Proce
 	client := r.state.getClient(req.ClientId)
 	client.LatestRequestNumber = req.RequestNumber
 	client.LatestResult = nil
-	client.ReplyChans[req.RequestNumber] = replyChan
 
 	r.inflight[r.state.OpNumber] = ReplyState{oks: map[ReplicaNumber]bool{
 		r.state.ReplicaNumber: true,
@@ -48,7 +47,7 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, replyChan chan Proce
 
 	for _, peer := range r.peers() {
 		r.outgoing <- Outgoing{
-			Target: peer,
+			To: PeerCorrespondent(peer),
 			Req: &Prepare{
 				ViewNumber:   r.state.ViewNumber,
 				Operation:    *req,
@@ -77,7 +76,7 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 	if req.OpNumber <= r.state.OpNumber {
 		slog.Info("prepare: reprocessing", "req", req.OpNumber, "me", r.state.OpNumber)
 		r.outgoing <- Outgoing{
-			Target: from,
+			To: PeerCorrespondent(from),
 			Req: &PrepareOK{
 				ViewNumber: r.state.ViewNumber,
 				OpNumber:   req.OpNumber,
@@ -104,7 +103,7 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 	r.backupCommit(req.CommitNumber)
 
 	r.outgoing <- Outgoing{
-		Target: from,
+		To: PeerCorrespondent(from),
 		Req: &PrepareOK{
 			ViewNumber: r.state.ViewNumber,
 			OpNumber:   req.OpNumber,
@@ -194,13 +193,11 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 		client := r.state.getClient(originalReq.ClientId)
 		client.LatestRequestNumber = originalReq.RequestNumber
 		client.LatestResult = response
-		if replyChan := client.ReplyChans[originalReq.RequestNumber]; replyChan != nil {
-			replyChan <- ProcessReply{
-				ViewNumber:    r.state.ViewNumber,
-				RequestNumber: originalReq.RequestNumber,
-				Reply:         response,
-			}
-		}
+		r.sendClient(originalReq.ClientId, &ProcessReply{
+			ViewNumber:    r.state.ViewNumber,
+			RequestNumber: originalReq.RequestNumber,
+			Reply:         response,
+		})
 	}
 }
 
