@@ -1,7 +1,5 @@
 package vr
 
-import "time"
-
 type ViewChange struct {
 	StartViewChanges map[ReplicaNumber]*StartViewChange
 	DoViewChanges    map[ReplicaNumber]*DoViewChange
@@ -14,18 +12,48 @@ func NewViewChange() *ViewChange {
 	}
 }
 
-func (r *Replica) initiateViewChange() {
-	r.state.Status = StatusViewChange
-	r.state.ViewNumber++
-	r.primaryAlive = time.Now()
-	r.state.Role = RoleBackup
+func (vc *ViewChange) hasQuorum(quorum int) bool {
+	return len(vc.DoViewChanges) >= quorum
+}
 
-	for _, peer := range r.peers() {
-		r.sendPeer(peer, &StartViewChange{
-			ViewNumber:    r.state.ViewNumber,
-			ReplicaNumber: r.state.ReplicaNumber,
-		})
+func (vc *ViewChange) longestLogAndHighestCommit() (*DoViewChange, CommitNumber) {
+	dos := vc.DoViewChanges
+	keys := make([]ReplicaNumber, 0, len(vc.DoViewChanges))
+	for rn := range vc.DoViewChanges {
+		keys = append(keys, rn)
 	}
+
+	highestLastView := dos[keys[0]]
+	for _, do := range dos {
+		if do.LastView > highestLastView.LastView {
+			highestLastView = do
+		}
+	}
+	dosFromLastView := []*DoViewChange{}
+	for _, do := range dos {
+		if do.LastView == highestLastView.LastView {
+			dosFromLastView = append(dosFromLastView, do)
+		}
+	}
+
+	longestLog := dosFromLastView[0]
+	for _, do := range dosFromLastView {
+		if do.OpNumber > longestLog.OpNumber {
+			longestLog = do
+		}
+	}
+	highestCommit := dosFromLastView[0]
+	for _, do := range dosFromLastView {
+		if do.CommitNumber > highestCommit.CommitNumber {
+			highestCommit = do
+		}
+	}
+
+	return longestLog, highestCommit.CommitNumber
+}
+
+func (r *Replica) initiateViewChange() {
+	r.startViewChange(r.state.ViewNumber + 1)
 }
 
 func (r *Replica) getPrimaryForView(view ViewNumber) ReplicaConfiguration {
@@ -46,17 +74,7 @@ func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartVie
 	viewChange.StartViewChanges[from.ID] = req
 
 	if req.ViewNumber > r.state.ViewNumber {
-		r.state.Status = StatusViewChange
-		r.state.ViewNumber = req.ViewNumber
-		r.primaryAlive = time.Now()
-		r.state.Role = RoleBackup
-
-		for _, peer := range r.peers() {
-			r.sendPeer(peer, &StartViewChange{
-				ViewNumber:    r.state.ViewNumber,
-				ReplicaNumber: r.state.ReplicaNumber,
-			})
-		}
+		r.startViewChange(req.ViewNumber)
 	}
 
 	if len(viewChange.StartViewChanges) < r.resilience() {
@@ -76,17 +94,7 @@ func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartVie
 
 func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChange) {
 	if req.ViewNumber > r.state.ViewNumber {
-		r.state.Status = StatusViewChange
-		r.state.ViewNumber = req.ViewNumber
-		r.primaryAlive = time.Now()
-		r.state.Role = RoleBackup
-
-		for _, peer := range r.peers() {
-			r.sendPeer(peer, &StartViewChange{
-				ViewNumber:    r.state.ViewNumber,
-				ReplicaNumber: r.state.ReplicaNumber,
-			})
-		}
+		r.startViewChange(req.ViewNumber)
 	}
 	if r.state.Status == StatusNormal {
 		// view change already concluded
@@ -104,65 +112,14 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 	}
 
 	viewChange.DoViewChanges[req.ReplicaNumber] = req
-	if len(viewChange.DoViewChanges) < r.quorum() {
+	if !viewChange.hasQuorum(r.quorum()) {
 		return
 	}
 
-	r.state.ViewNumber = req.ViewNumber
-	r.state.Status = StatusNormal
-	r.lastNormalView = r.state.ViewNumber
-	r.state.Role = RolePrimary
-	r.primaryAlive = time.Now()
+	longestLog, highestCommit := viewChange.longestLogAndHighestCommit()
 
-	dos := viewChange.DoViewChanges
-	keys := make([]ReplicaNumber, 0, len(viewChange.DoViewChanges))
-	for rn := range viewChange.DoViewChanges {
-		keys = append(keys, rn)
-	}
-
-	highestLastView := dos[keys[0]]
-	for _, do := range dos {
-		if do.LastView > highestLastView.LastView {
-			highestLastView = do
-		}
-	}
-	dosFromLastView := []*DoViewChange{}
-	for _, do := range dos {
-		if do.LastView == highestLastView.LastView {
-			dosFromLastView = append(dosFromLastView, do)
-		}
-	}
-
-	highest := dosFromLastView[0]
-	for _, do := range dosFromLastView {
-		if do.OpNumber > highest.OpNumber {
-			highest = do
-		}
-	}
-
-	lastCommit := OpNumber(r.state.CommitNumber)
-	r.state.OpNumber = highest.OpNumber
-	r.state.CommitNumber = highest.CommitNumber
-	r.state.Log = highest.Log
-
-	for cur := lastCommit + 1; cur <= OpNumber(r.state.CommitNumber); cur++ {
-		originalReq := r.state.Log[cur-1]
-		response := r.upCall(originalReq.Operation)
-
-		client, ok := r.state.ClientTable[originalReq.ClientId]
-		if !ok {
-			client = &Client{}
-			r.state.ClientTable[originalReq.ClientId] = client
-		}
-		client.LatestRequestNumber = originalReq.RequestNumber
-		client.LatestResult = response
-	}
-
-	for cur := OpNumber(r.state.CommitNumber + 1); cur <= r.state.OpNumber; cur++ {
-		r.inflight[cur] = ReplyState{oks: map[ReplicaNumber]bool{
-			r.state.ReplicaNumber: true,
-		}}
-	}
+	r.startNormal(req.ViewNumber, RolePrimary, longestLog.Log, longestLog.OpNumber,
+		highestCommit)
 
 	for _, peer := range r.peers() {
 		r.sendPeer(peer, &StartView{
@@ -174,33 +131,12 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 	}
 }
 
-func (r *Replica) handleStartView(from ReplicaConfiguration, req *StartView) {
+func (r *Replica) handleStartView(_ ReplicaConfiguration, req *StartView) {
 	if req.ViewNumber < r.state.ViewNumber ||
 		(req.ViewNumber == r.state.ViewNumber && r.state.Status == StatusNormal) {
 		return
 	}
 
-	r.state.ViewNumber = req.ViewNumber
-	r.state.Status = StatusNormal
-	r.lastNormalView = r.state.ViewNumber
-	r.state.Role = RoleBackup
-	r.primaryAlive = time.Now()
-	r.state.Log = req.Log
-	r.state.OpNumber = req.OpNumber
-
-	for cur := OpNumber(r.state.CommitNumber) + 1; cur <= OpNumber(req.CommitNumber); cur++ {
-		originalReq := r.state.Log[cur-1]
-		response := r.upCall(originalReq.Operation)
-
-		client := r.state.ClientTable[originalReq.ClientId]
-		client.LatestRequestNumber = originalReq.RequestNumber
-		client.LatestResult = response
-		r.sendPeer(from, &PrepareOK{
-			ViewNumber: r.state.ViewNumber,
-			OpNumber:   cur,
-			BackupId:   r.state.ReplicaNumber,
-		})
-	}
-
-	r.state.CommitNumber = req.CommitNumber
+	r.startNormal(req.ViewNumber, RoleBackup, req.Log, req.OpNumber,
+		req.CommitNumber)
 }

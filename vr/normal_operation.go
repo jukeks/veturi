@@ -37,11 +37,7 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, replyChan chan Proce
 	r.state.Log = append(r.state.Log, req)
 	r.state.OpNumber++
 
-	client, ok := r.state.ClientTable[req.ClientId]
-	if !ok {
-		client = &Client{ReplyChans: make(map[RequestNumber]chan<- ProcessReply)}
-		r.state.ClientTable[req.ClientId] = client
-	}
+	client := r.state.getClient(req.ClientId)
 	client.LatestRequestNumber = req.RequestNumber
 	client.LatestResult = nil
 	client.ReplyChans[req.RequestNumber] = replyChan
@@ -78,7 +74,7 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 
 	r.primaryAlive = time.Now()
 
-	if req.OpNumber < r.state.OpNumber {
+	if req.OpNumber <= r.state.OpNumber {
 		slog.Info("prepare: reprocessing", "req", req.OpNumber, "me", r.state.OpNumber)
 		r.outgoing <- Outgoing{
 			Target: from,
@@ -99,11 +95,8 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 
 	r.state.Log = append(r.state.Log, &req.Operation)
 	r.state.OpNumber++
-	client, ok := r.state.ClientTable[req.Operation.ClientId]
-	if !ok {
-		client = &Client{ReplyChans: map[RequestNumber]chan<- ProcessReply{}}
-		r.state.ClientTable[req.Operation.ClientId] = client
-	}
+
+	client := r.state.getClient(req.Operation.ClientId)
 	client.LatestRequestNumber = req.Operation.RequestNumber
 	client.LatestResult = nil
 
@@ -140,11 +133,8 @@ func (r *Replica) handleEarlyPrepares() {
 
 		r.state.Log = append(r.state.Log, &req.Operation)
 		r.state.OpNumber++
-		client, ok := r.state.ClientTable[req.Operation.ClientId]
-		if !ok {
-			client = &Client{} // backup doesn't handle replies
-			r.state.ClientTable[req.Operation.ClientId] = client
-		}
+
+		client := r.state.getClient(req.Operation.ClientId)
 		client.LatestRequestNumber = req.Operation.RequestNumber
 		client.LatestResult = nil
 	}
@@ -201,7 +191,7 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 		originalReq := r.state.Log[r.state.CommitNumber-1]
 		response := r.upCall(originalReq.Operation)
 
-		client := r.state.ClientTable[originalReq.ClientId]
+		client := r.state.getClient(originalReq.ClientId)
 		client.LatestRequestNumber = originalReq.RequestNumber
 		client.LatestResult = response
 		if replyChan := client.ReplyChans[originalReq.RequestNumber]; replyChan != nil {
@@ -242,15 +232,5 @@ func (r *Replica) backupCommit(primaryCommitNumber CommitNumber) {
 		lastCommitable = CommitNumber(r.state.OpNumber)
 	}
 
-	for r.state.CommitNumber < lastCommitable {
-		r.state.CommitNumber++
-
-		originalReq := r.state.Log[r.state.CommitNumber-1]
-
-		response := r.upCall(originalReq.Operation)
-
-		client := r.state.ClientTable[originalReq.ClientId]
-		client.LatestRequestNumber = originalReq.RequestNumber
-		client.LatestResult = response
-	}
+	r.executeUpTo(lastCommitable)
 }
