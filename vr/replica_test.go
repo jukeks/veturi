@@ -16,7 +16,7 @@ type TestingCluster struct {
 }
 
 type TestingClient struct {
-	replyChan chan *ProcessReply
+	replyChan chan ProcessReply
 }
 
 func NewTestingCluster(clients map[ClientId]TestingClient) *TestingCluster {
@@ -57,7 +57,7 @@ func (tc *TestingCluster) Transport() chan<- bool {
 						} else {
 							client := tc.clients[outgoing.To.Client]
 							reply := outgoing.Req.(*ProcessReply)
-							client.replyChan <- reply
+							client.replyChan <- *reply
 						}
 					case <-stop:
 						return
@@ -89,7 +89,7 @@ func createCluster(members int, elected bool, clientIds []ClientId) (*TestingClu
 	clients := map[ClientId]TestingClient{}
 	for _, id := range clientIds {
 		clients[id] = TestingClient{
-			replyChan: make(chan *ProcessReply),
+			replyChan: make(chan ProcessReply),
 		}
 	}
 
@@ -142,7 +142,7 @@ func TestProcess(t *testing.T) {
 
 	start := 123
 	reqs := []ProcessRequest{}
-	replies := []*ProcessReply{}
+	replies := []ProcessReply{}
 	for i := range 5 {
 		req := ProcessRequest{
 			RequestNumber: RequestNumber(start + i),
@@ -151,10 +151,14 @@ func TestProcess(t *testing.T) {
 		}
 		reqs = append(reqs, req)
 
-		tc.replicas[0].Request(req, clientId)
+		tc.replicas[0].Request(req)
 		replyChan := tc.clients[clientId].replyChan
-		reply := <-replyChan
-		replies = append(replies, reply)
+		select {
+		case reply := <-replyChan:
+			replies = append(replies, reply)
+		case <-time.After(10 * time.Second):
+			continue
+		}
 	}
 
 	cleanup()

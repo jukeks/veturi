@@ -1,5 +1,10 @@
 package vr
 
+import (
+	"log/slog"
+	"time"
+)
+
 type ViewChange struct {
 	StartViewChanges map[ReplicaNumber]*StartViewChange
 	DoViewChanges    map[ReplicaNumber]*DoViewChange
@@ -50,6 +55,73 @@ func (vc *ViewChange) longestLogAndHighestCommit() (*DoViewChange, CommitNumber)
 	}
 
 	return longestLog, highestCommit.CommitNumber
+}
+
+func (r *Replica) checkView(reqView ViewNumber) bool {
+	if r.state.ViewNumber > reqView {
+		slog.Info("req from older view, dropping")
+		return true
+	}
+	if r.state.ViewNumber < reqView {
+		r.moveToNewerView(reqView)
+	}
+
+	return false
+}
+
+func (r *Replica) resetViewState(v ViewNumber) {
+	r.state.ViewNumber = v
+	r.state.Role = RoleBackup
+	r.primaryAlive = time.Now()
+
+	clear(r.inflight)
+	clear(r.earlyPrepares)
+
+	for view := range r.viewChanges {
+		if view < v {
+			delete(r.viewChanges, view)
+		}
+	}
+}
+
+func (r *Replica) startViewChange(v ViewNumber) {
+	r.resetViewState(v)
+	r.state.Status = StatusViewChange
+	for _, peer := range r.peers() {
+		r.sendPeer(peer, &StartViewChange{ViewNumber: v, ReplicaNumber: r.state.ReplicaNumber})
+	}
+}
+
+func (r *Replica) startNormal(v ViewNumber, role ReplicaRole,
+	log []*ProcessRequest, op OpNumber, commit CommitNumber) {
+	r.resetViewState(v)
+	r.state.Status = StatusNormal
+	r.state.Role = role
+	r.lastNormalView = v
+	r.state.Log = nil
+	r.state.Log = append(r.state.Log, log...)
+	r.state.OpNumber = op
+	r.commitUpTo(commit)
+
+	for n := OpNumber(r.state.CommitNumber) + 1; n <= op; n++ {
+		if role == RolePrimary {
+			r.inflight[n] = ReplyState{
+				oks: map[ReplicaNumber]bool{r.state.ReplicaNumber: true},
+			}
+		} else {
+			r.sendPeer(r.getPrimaryForView(v),
+				&PrepareOK{ViewNumber: v, OpNumber: n, BackupId: r.state.ReplicaNumber})
+		}
+	}
+}
+
+func (r *Replica) moveToNewerView(v ViewNumber) {
+	r.resetViewState(v)
+	r.state.OpNumber = OpNumber(r.state.CommitNumber)
+	r.state.Log = r.state.Log[:r.state.OpNumber]
+	r.state.Status = StatusNormal
+	// do not set lastNormalView: this replica has only the committed prefix of view v
+	// TODO: send GETSTATE; after NEWSTATE, set lastNormalView = v
 }
 
 func (r *Replica) initiateViewChange() {
