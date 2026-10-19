@@ -52,6 +52,16 @@ type ReplicaState struct {
 	Role           ReplicaRole
 }
 
+func (rs *ReplicaState) GetConfiguration() ReplicaConfiguration {
+	for _, member := range rs.ClusterMembers {
+		if member.ID == rs.ReplicaNumber {
+			return member
+		}
+	}
+
+	return ReplicaConfiguration{}
+}
+
 func DefaultReplicaState() ReplicaState {
 	return ReplicaState{
 		Role:        RoleBackup,
@@ -112,11 +122,12 @@ type ReplyState struct {
 type UpCall func(Payload) Payload
 
 type Replica struct {
-	state    ReplicaState
-	incoming chan Incoming
-	outgoing chan Outgoing
-	stop     chan bool
-	stopped  chan bool
+	state          ReplicaState
+	incoming       chan Incoming
+	outgoing       chan Outgoing
+	outgoingBuffer []Outgoing
+	stop           chan bool
+	stopped        chan bool
 
 	earlyPrepares map[OpNumber]*Prepare
 	inflight      map[OpNumber]ReplyState
@@ -153,6 +164,14 @@ func (r *Replica) Request(req ProcessRequest) {
 	}
 }
 
+func (r *Replica) Step(req Incoming) []Outgoing {
+	r.handleReq(req)
+
+	out := r.outgoingBuffer
+	r.outgoingBuffer = nil
+	return out
+}
+
 func (r *Replica) Run() {
 	ticker := time.NewTicker(TickInterval)
 
@@ -162,7 +181,10 @@ loop:
 		case <-r.stop:
 			break loop
 		case req := <-r.incoming:
-			r.handleReq(req)
+			out := r.Step(req)
+			for _, req := range out {
+				r.outgoing <- req
+			}
 		case <-ticker.C:
 			r.handleTick()
 		}
@@ -230,17 +252,17 @@ func (r *Replica) handleReq(incoming Incoming) {
 }
 
 func (r *Replica) sendPeer(peer ReplicaConfiguration, req Request) {
-	r.outgoing <- Outgoing{
+	r.outgoingBuffer = append(r.outgoingBuffer, Outgoing{
 		To:  PeerCorrespondent(peer),
 		Req: req,
-	}
+	})
 }
 
 func (r *Replica) sendClient(client ClientId, req Request) {
-	r.outgoing <- Outgoing{
+	r.outgoingBuffer = append(r.outgoingBuffer, Outgoing{
 		To:  ClientCorrespondent(client),
 		Req: req,
-	}
+	})
 }
 
 func (r *Replica) handleTick() {

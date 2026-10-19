@@ -50,15 +50,12 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 	}}
 
 	for _, peer := range r.peers() {
-		r.outgoing <- Outgoing{
-			To: PeerCorrespondent(peer),
-			Req: &Prepare{
-				ViewNumber:   r.state.ViewNumber,
-				Operation:    *req,
-				OpNumber:     r.state.OpNumber,
-				CommitNumber: r.state.CommitNumber,
-			},
-		}
+		r.sendPeer(peer, &Prepare{
+			ViewNumber:   r.state.ViewNumber,
+			Operation:    *req,
+			OpNumber:     r.state.OpNumber,
+			CommitNumber: r.state.CommitNumber,
+		})
 	}
 }
 
@@ -79,14 +76,11 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 
 	if req.OpNumber <= r.state.OpNumber {
 		slog.Info("prepare: reprocessing", "req", req.OpNumber, "me", r.state.OpNumber)
-		r.outgoing <- Outgoing{
-			To: PeerCorrespondent(from),
-			Req: &PrepareOK{
-				ViewNumber: r.state.ViewNumber,
-				OpNumber:   req.OpNumber,
-				BackupId:   r.state.ReplicaNumber,
-			},
-		}
+		r.sendPeer(from, &PrepareOK{
+			ViewNumber: r.state.ViewNumber,
+			OpNumber:   req.OpNumber,
+			BackupId:   r.state.ReplicaNumber,
+		})
 		return
 	}
 
@@ -102,14 +96,11 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 	r.handleEarlyPrepares()
 	r.backupCommit(req.CommitNumber)
 
-	r.outgoing <- Outgoing{
-		To: PeerCorrespondent(from),
-		Req: &PrepareOK{
-			ViewNumber: r.state.ViewNumber,
-			OpNumber:   r.state.OpNumber,
-			BackupId:   r.state.ReplicaNumber,
-		},
-	}
+	r.sendPeer(from, &PrepareOK{
+		ViewNumber: r.state.ViewNumber,
+		OpNumber:   r.state.OpNumber,
+		BackupId:   r.state.ReplicaNumber,
+	})
 }
 
 func (r *Replica) handleEarlyPrepares() {
