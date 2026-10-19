@@ -47,16 +47,16 @@ func TestGapsInPrepareOK(t *testing.T) {
 		},
 	}
 
-	output1 := backup.Step(req2)
-	output2 := backup.Step(req1)
+	afterReq2 := backup.Step(req2)
+	afterReq1 := backup.Step(req1)
 
-	if len(output1) != 0 {
-		t.Errorf("output1 had len %d", len(output1))
+	if len(afterReq2) != 0 {
+		t.Errorf("afterReq2 had len %d", len(afterReq2))
 	}
-	if len(output2) != 1 {
-		t.Errorf("output2 had len %d", len(output2))
+	if len(afterReq1) != 1 {
+		t.Errorf("afterReq1 had len %d", len(afterReq1))
 	}
-	resp := output2[0]
+	resp := afterReq1[0]
 	prepareOk, ok := resp.Req.(*PrepareOK)
 	if !ok {
 		t.Errorf("req was not PrepareOK: %v", resp.Req)
@@ -65,5 +65,4 @@ func TestGapsInPrepareOK(t *testing.T) {
 	if prepareOk.OpNumber != 2 {
 		t.Errorf("backup did not ok both ops: %d", prepareOk.OpNumber)
 	}
-
 }

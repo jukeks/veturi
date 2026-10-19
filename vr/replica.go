@@ -265,6 +265,14 @@ func (r *Replica) sendClient(client ClientId, req Request) {
 	})
 }
 
+func (r *Replica) flush() {
+	out := r.outgoingBuffer
+	r.outgoingBuffer = nil
+	for _, msg := range out {
+		r.outgoing <- msg
+	}
+}
+
 func (r *Replica) handleTick() {
 	if r.state.Role == RolePrimary {
 		for _, peer := range r.peers() {
@@ -278,6 +286,8 @@ func (r *Replica) handleTick() {
 			r.initiateViewChange()
 		}
 	}
+
+	r.flush()
 }
 
 func (r *Replica) commitUpTo(commit CommitNumber) {
