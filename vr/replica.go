@@ -166,10 +166,12 @@ func (r *Replica) Request(req ProcessRequest) {
 
 func (r *Replica) Step(req Incoming) []Outgoing {
 	r.handleReq(req)
+	return r.flush()
+}
 
-	out := r.outgoingBuffer
-	r.outgoingBuffer = nil
-	return out
+func (r *Replica) Tick() []Outgoing {
+	r.handleTick()
+	return r.flush()
 }
 
 func (r *Replica) Run() {
@@ -181,12 +183,9 @@ loop:
 		case <-r.stop:
 			break loop
 		case req := <-r.incoming:
-			out := r.Step(req)
-			for _, req := range out {
-				r.outgoing <- req
-			}
+			r.send(r.Step(req))
 		case <-ticker.C:
-			r.handleTick()
+			r.send(r.Tick())
 		}
 	}
 
@@ -265,10 +264,14 @@ func (r *Replica) sendClient(client ClientId, req Request) {
 	})
 }
 
-func (r *Replica) flush() {
+func (r *Replica) flush() []Outgoing {
 	out := r.outgoingBuffer
 	r.outgoingBuffer = nil
-	for _, msg := range out {
+	return out
+}
+
+func (r *Replica) send(msgs []Outgoing) {
+	for _, msg := range msgs {
 		r.outgoing <- msg
 	}
 }
@@ -286,8 +289,6 @@ func (r *Replica) handleTick() {
 			r.initiateViewChange()
 		}
 	}
-
-	r.flush()
 }
 
 func (r *Replica) commitUpTo(commit CommitNumber) {
