@@ -34,6 +34,14 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 		}
 	}
 
+	for op := OpNumber(r.state.CommitNumber + 1); op <= r.state.OpNumber; op++ {
+		logEntry := r.state.Log[op-1]
+		if logEntry.ClientId == req.ClientId && logEntry.RequestNumber == req.RequestNumber {
+			slog.Info("dropping already processing request")
+			return
+		}
+	}
+
 	r.state.Log = append(r.state.Log, req)
 	r.state.OpNumber++
 
@@ -55,15 +63,15 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 }
 
 func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
-	if r.state.Status != StatusNormal {
-		slog.Info("Can't process requests")
-		return
-	}
 	if r.checkView(req.ViewNumber) {
 		return
 	}
 	if r.state.Role != RoleBackup {
 		slog.Info("prepare: reached primary, dropping")
+		return
+	}
+	if r.state.Status != StatusNormal {
+		slog.Info("Can't process requests")
 		return
 	}
 
@@ -98,7 +106,7 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 		To: PeerCorrespondent(from),
 		Req: &PrepareOK{
 			ViewNumber: r.state.ViewNumber,
-			OpNumber:   req.OpNumber,
+			OpNumber:   r.state.OpNumber,
 			BackupId:   r.state.ReplicaNumber,
 		},
 	}
@@ -145,17 +153,27 @@ func (r *Replica) earliestUncommittedOpWithQuorum() OpNumber {
 	return earliest
 }
 
+func (r *Replica) updateOKUpTo(lastOp OpNumber, peer ReplicaNumber) {
+	// mark all prepares ok up to lastOp
+	for key := range r.inflight {
+		replyState := r.inflight[key]
+		if key <= lastOp {
+			replyState.oks[peer] = true
+		}
+	}
+}
+
 func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 	if r.checkView(req.ViewNumber) {
 		return
 	}
 
-	replyState, ok := r.inflight[req.OpNumber]
+	_, ok := r.inflight[req.OpNumber]
 	if !ok {
 		slog.Info("got PrepareOK for unknown op", "PrepareOK", req)
 		return
 	}
-	replyState.oks[req.BackupId] = true
+	r.updateOKUpTo(req.OpNumber, req.BackupId)
 
 	// check inflight
 	for len(r.inflight) > 0 {
