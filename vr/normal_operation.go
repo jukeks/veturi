@@ -3,7 +3,6 @@ package vr
 import (
 	"log/slog"
 	"slices"
-	"time"
 )
 
 func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
@@ -72,7 +71,7 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 		return
 	}
 
-	r.primaryAlive = time.Now()
+	r.resetTimer()
 
 	if req.OpNumber <= r.state.OpNumber {
 		slog.Info("prepare: reprocessing", "req", req.OpNumber, "me", r.state.OpNumber)
@@ -197,7 +196,7 @@ func (r *Replica) handleCommit(_ ReplicaConfiguration, req *Commit) {
 		return
 	}
 
-	r.primaryAlive = time.Now()
+	r.resetTimer()
 	r.backupCommit(req.CommitNumber)
 }
 

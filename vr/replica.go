@@ -2,12 +2,13 @@ package vr
 
 import (
 	"log/slog"
+	"math/rand/v2"
 	"time"
 )
 
 const (
-	TickInterval   = 50 * time.Millisecond
-	PrimaryTimeout = 500 * time.Millisecond
+	TickInterval        = 50 * time.Millisecond
+	PrimaryTimeoutTicks = 10
 )
 
 type ReplicaConfiguration struct {
@@ -133,13 +134,17 @@ type Replica struct {
 	inflight      map[OpNumber]ReplyState
 	upCall        UpCall
 
-	primaryAlive time.Time
+	ticksSincePrimary int
+	timeoutTicks      int
 
 	lastNormalView ViewNumber
 	viewChanges    map[ViewNumber]*ViewChange
+
+	rand *rand.Rand
 }
 
-func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration, upCall UpCall) *Replica {
+func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
+	upCall UpCall, seed uint64) *Replica {
 	state := DefaultReplicaState()
 	state.ReplicaNumber = id
 	state.ClusterMembers = clusterMembers
@@ -154,6 +159,7 @@ func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration, upCall 
 		inflight:      map[OpNumber]ReplyState{},
 		upCall:        upCall,
 		viewChanges:   map[ViewNumber]*ViewChange{},
+		rand:          rand.New(rand.NewPCG(seed, uint64(id))),
 	}
 }
 
@@ -285,7 +291,8 @@ func (r *Replica) handleTick() {
 			})
 		}
 	} else {
-		if time.Since(r.primaryAlive) > PrimaryTimeout {
+		r.ticksSincePrimary++
+		if r.ticksSincePrimary >= r.timeoutTicks {
 			r.initiateViewChange()
 		}
 	}
@@ -309,4 +316,9 @@ func (r *Replica) commitUpTo(commit CommitNumber) {
 			})
 		}
 	}
+}
+
+func (r *Replica) resetTimer() {
+	r.ticksSincePrimary = 0
+	r.timeoutTicks = PrimaryTimeoutTicks + r.rand.IntN(PrimaryTimeoutTicks) // jitter
 }

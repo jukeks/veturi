@@ -97,7 +97,7 @@ func createCluster(members int, elected bool, clientIds []ClientId) (*TestingClu
 	replicas := []*Replica{}
 	for i := range members {
 		id := ReplicaNumber(i)
-		replicas = append(replicas, NewReplica(id, config, tc.UpCallFor(id)))
+		replicas = append(replicas, NewReplica(id, config, tc.UpCallFor(id), 42))
 	}
 
 	if elected {

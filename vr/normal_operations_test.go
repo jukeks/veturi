@@ -5,7 +5,7 @@ import (
 )
 
 func NewTestReplica(id ReplicaNumber, role ReplicaRole, configs []ReplicaConfiguration) *Replica {
-	r := NewReplica(id, configs, func(_ Payload) Payload { return nil })
+	r := NewReplica(id, configs, func(_ Payload) Payload { return nil }, 42)
 	r.state.Role = role
 	r.state.Status = StatusNormal
 

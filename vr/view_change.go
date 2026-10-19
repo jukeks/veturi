@@ -2,7 +2,6 @@ package vr
 
 import (
 	"log/slog"
-	"time"
 )
 
 type ViewChange struct {
@@ -72,7 +71,7 @@ func (r *Replica) checkView(reqView ViewNumber) bool {
 func (r *Replica) resetViewState(v ViewNumber) {
 	r.state.ViewNumber = v
 	r.state.Role = RoleBackup
-	r.primaryAlive = time.Now()
+	r.resetTimer()
 
 	clear(r.inflight)
 	clear(r.earlyPrepares)
