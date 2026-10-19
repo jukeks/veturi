@@ -79,40 +79,40 @@ func (s *ReplicaState) getClient(id ClientId) *Client {
 	return client
 }
 
-type CorrespondendType int
+type CorrespondentType int
 
 const (
-	CorrespondentClient CorrespondendType = iota
+	CorrespondentClient CorrespondentType = iota
 	CorrespondentPeer
 )
 
-type Correspondend struct {
-	Type   CorrespondendType
+type Correspondent struct {
+	Type   CorrespondentType
 	Peer   ReplicaConfiguration
 	Client ClientId
 }
 
-func ClientCorrespondent(id ClientId) Correspondend {
-	return Correspondend{
+func ClientCorrespondent(id ClientId) Correspondent {
+	return Correspondent{
 		Type:   CorrespondentClient,
 		Client: id,
 	}
 }
 
-func PeerCorrespondent(peer ReplicaConfiguration) Correspondend {
-	return Correspondend{
+func PeerCorrespondent(peer ReplicaConfiguration) Correspondent {
+	return Correspondent{
 		Type: CorrespondentPeer,
 		Peer: peer,
 	}
 }
 
 type Incoming struct {
-	From Correspondend
+	From Correspondent
 	Req  Request
 }
 
 type Outgoing struct {
-	To  Correspondend
+	To  Correspondent
 	Req Request
 }
 

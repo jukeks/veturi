@@ -3,254 +3,323 @@ package vr
 import (
 	"bytes"
 	"fmt"
-	"sync"
+	"math/rand/v2"
 	"testing"
-	"time"
 )
 
-type TestingCluster struct {
+type inFlight struct {
+	deliverAt int
+	from      Correspondent
+	out       Outgoing
+}
+
+func (i *inFlight) toIncoming() Incoming {
+	return Incoming{
+		From: i.from,
+		Req:  i.out.Req,
+	}
+}
+
+type Sim struct {
+	t        *testing.T
+	seed     uint64
+	rand     *rand.Rand
+	now      int
 	replicas []*Replica
-	clients  map[ClientId]TestingClient
-	mu       sync.Mutex
-	state    map[ReplicaNumber][]Payload
+	down     map[ReplicaNumber]bool
+	network  []inFlight
+
+	executed map[ReplicaNumber][]Payload
+	replies  []*ProcessReply
 }
 
-type TestingClient struct {
-	replyChan chan ProcessReply
-}
+func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
+	t.Helper()
 
-func NewTestingCluster(clients map[ClientId]TestingClient) *TestingCluster {
-	return &TestingCluster{
-		state:   map[ReplicaNumber][]Payload{},
-		clients: clients,
+	s := &Sim{
+		t:        t,
+		seed:     seed,
+		rand:     rand.New(rand.NewPCG(seed, 0)),
+		down:     map[ReplicaNumber]bool{},
+		executed: map[ReplicaNumber][]Payload{},
 	}
-}
 
-func (tc *TestingCluster) UpCallFor(i ReplicaNumber) UpCall {
-	return func(req Payload) Payload {
-		tc.mu.Lock()
-		defer tc.mu.Unlock()
-
-		tc.state[i] = append(tc.state[i], req)
-		return nil
-	}
-}
-
-func (tc *TestingCluster) Transport() chan<- bool {
-	publicStop := make(chan bool, 1)
-	go func() {
-		stops := []chan bool{}
-		for _, replica := range tc.replicas {
-			stop := make(chan bool, 1)
-			stops = append(stops, stop)
-			go func(stop chan bool, replica *Replica, id ReplicaNumber) {
-				config := replica.state.ClusterMembers[id]
-				for {
-					select {
-					case outgoing := <-replica.outgoing:
-						if outgoing.To.Type == CorrespondentPeer {
-							targetReplica := tc.replicas[outgoing.To.Peer.ID]
-							targetReplica.incoming <- Incoming{
-								From: PeerCorrespondent(config),
-								Req:  outgoing.Req,
-							}
-						} else {
-							client := tc.clients[outgoing.To.Client]
-							reply := outgoing.Req.(*ProcessReply)
-							client.replyChan <- *reply
-						}
-					case <-stop:
-						return
-					}
-				}
-			}(stop, replica, replica.state.ReplicaNumber)
-		}
-
-		<-publicStop
-		for _, stop := range stops {
-			<-stop
-		}
-	}()
-
-	return publicStop
-}
-
-type CleanUp func()
-
-func createCluster(members int, elected bool, clientIds []ClientId) (*TestingCluster, CleanUp) {
-	config := []ReplicaConfiguration{}
-	for i := range members {
-		config = append(config, ReplicaConfiguration{
+	config := make([]ReplicaConfiguration, memberCount)
+	for i := range memberCount {
+		config[i] = ReplicaConfiguration{
 			ID:       ReplicaNumber(i),
 			Hostname: fmt.Sprintf("%d", i),
+		}
+	}
+
+	for i := range memberCount {
+		id := ReplicaNumber(i)
+		upCall := func(op Payload) Payload {
+			s.executed[id] = append(s.executed[id], op)
+			return op
+		}
+		s.replicas = append(s.replicas, NewReplica(id, config, upCall, seed+1))
+	}
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("sim seed %d, failed at tick %d", s.seed, s.now)
+		}
+	})
+
+	return s
+}
+
+func (s *Sim) getPeer(id ReplicaNumber) *Replica {
+	for _, peer := range s.replicas {
+		if peer.state.ReplicaNumber == id {
+			return peer
+		}
+	}
+
+	return nil
+}
+
+func (s *Sim) getPrimary() *Replica {
+	for _, peer := range s.replicas {
+		if peer.state.Role == RolePrimary {
+			return peer
+		}
+	}
+
+	return nil
+}
+
+func (s *Sim) stop(id ReplicaNumber) {
+	s.down[id] = true
+}
+
+func (s *Sim) proceed(id ReplicaNumber) {
+	delete(s.down, id)
+}
+
+type Condition func() bool
+
+func (s *Sim) sendNextTick(from Correspondent, outgoing []Outgoing) {
+	for _, msg := range outgoing {
+		s.network = append(s.network, inFlight{
+			deliverAt: s.now + 1,
+			from:      from,
+			out:       msg,
 		})
 	}
+}
 
-	clients := map[ClientId]TestingClient{}
-	for _, id := range clientIds {
-		clients[id] = TestingClient{
-			replyChan: make(chan ProcessReply),
+func (s *Sim) Send(from, to Correspondent, req Request, deliveryAt int) {
+	s.network = append(s.network, inFlight{
+		deliverAt: deliveryAt,
+		from:      from,
+		out: Outgoing{
+			To:  to,
+			Req: req,
+		},
+	})
+}
+
+func (s *Sim) deliver() {
+	s.t.Helper()
+
+	newMsgs := []inFlight{}
+
+	i := 0
+	for i = 0; i < len(s.network); i++ {
+		msg := s.network[i]
+		if msg.deliverAt > s.now {
+			break
+		}
+
+		if msg.out.To.Type == CorrespondentPeer {
+			peer := s.getPeer(msg.out.To.Peer.ID)
+			if s.down[peer.state.ReplicaNumber] {
+				continue
+			}
+
+			msgs := peer.Step(msg.toIncoming())
+
+			newInflights := make([]inFlight, len(msgs))
+			for i, msg := range msgs {
+				newInflights[i] = inFlight{
+					deliverAt: s.now + 1,
+					from:      PeerCorrespondent(peer.state.GetConfiguration()),
+					out:       msg,
+				}
+			}
+
+			newMsgs = append(newMsgs, newInflights...)
+		} else {
+			s.replies = append(s.replies, msg.out.Req.(*ProcessReply))
 		}
 	}
 
-	tc := NewTestingCluster(clients)
-	replicas := []*Replica{}
-	for i := range members {
-		id := ReplicaNumber(i)
-		replicas = append(replicas, NewReplica(id, config, tc.UpCallFor(id), 42))
-	}
-
-	if elected {
-		replicas[0].state.Role = RolePrimary
-		replicas[1].state.Role = RoleBackup
-		replicas[2].state.Role = RoleBackup
-	}
-
-	go replicas[0].Run()
-	go replicas[1].Run()
-	go replicas[2].Run()
-
-	tc.replicas = replicas
-	transportStop := tc.Transport()
-	return tc, func() {
-		replicas[0].Stop()
-		replicas[1].Stop()
-		replicas[2].Stop()
-		transportStop <- true
-	}
+	s.network = s.network[i:]
+	s.network = append(s.network, newMsgs...)
 }
 
-func logContains(t *testing.T, r *Replica, req ProcessRequest) {
-	for _, entry := range r.state.Log {
-		if entry.RequestNumber != req.RequestNumber {
+func (s *Sim) tick() {
+	s.t.Helper()
+
+	s.now++
+
+	s.deliver()
+	for _, peer := range s.replicas {
+		if s.down[peer.state.ReplicaNumber] {
 			continue
 		}
 
-		if !bytes.Equal(entry.Operation, req.Operation) {
-			t.Error("correct entry but wrong content")
-		}
-
-		return
-	}
-
-	t.Errorf("replica %d did not have log entry", r.state.ReplicaNumber)
-}
-
-func TestProcess(t *testing.T) {
-	clientId := ClientId(555)
-	tc, cleanup := createCluster(3, true, []ClientId{clientId})
-
-	start := 123
-	reqs := []ProcessRequest{}
-	replies := []ProcessReply{}
-	for i := range 5 {
-		req := ProcessRequest{
-			RequestNumber: RequestNumber(start + i),
-			ClientId:      clientId,
-			Operation:     []byte(fmt.Sprintf("%d", i)),
-		}
-		reqs = append(reqs, req)
-
-		tc.replicas[0].Request(req)
-		replyChan := tc.clients[clientId].replyChan
-		select {
-		case reply := <-replyChan:
-			replies = append(replies, reply)
-		case <-time.After(10 * time.Second):
-			continue
-		}
-	}
-
-	cleanup()
-
-	for i := range len(reqs) {
-		req := reqs[i]
-		reply := replies[i]
-		if reply.RequestNumber != req.RequestNumber {
-			t.Error("req number failed")
-		}
-
-		for _, r := range tc.replicas {
-			logContains(t, r, req)
-		}
-	}
-
-	for _, r := range tc.replicas {
-		if r.state.OpNumber != 5 {
-			t.Errorf("wrong commit number %d at replica %d", r.state.CommitNumber, r.state.ReplicaNumber)
-		}
-	}
-
-	primary := tc.replicas[0]
-	if primary.state.CommitNumber != 5 {
-		t.Errorf("primary did not commit")
+		out := peer.Tick()
+		s.sendNextTick(PeerCorrespondent(peer.state.GetConfiguration()), out)
 	}
 }
 
-func TestInitialViewChange(t *testing.T) {
-	tc, cleanup := createCluster(3, false, nil)
-	time.Sleep(1 * time.Second)
-	cleanup()
+func (s *Sim) RunUntil(condition Condition, maxTicks int) {
+	s.t.Helper()
 
+	stopTicks := s.now + maxTicks
+	for s.now < stopTicks {
+		if condition() {
+			break
+		}
+		s.tick()
+	}
+
+	if !condition() {
+		s.t.Fatal("condition not met")
+	}
+}
+
+func (s *Sim) HasPrimary() bool {
+	for _, peer := range s.replicas {
+		if peer.state.Role == RolePrimary {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *Sim) IsOperational() bool {
 	primaries := 0
 	backups := 0
-	for _, peer := range tc.replicas {
+	highestView := ViewNumber(0)
+	for _, peer := range s.replicas {
+		if s.down[peer.state.ReplicaNumber] {
+			continue
+		}
+
 		if peer.state.Role == RolePrimary {
 			primaries++
-		}
-		if peer.state.Role == RoleBackup {
+		} else {
 			backups++
+		}
+		if peer.state.ViewNumber > highestView {
+			highestView = peer.state.ViewNumber
 		}
 	}
 
 	if primaries != 1 {
-		t.Errorf("not 1 primary: %d", primaries)
+		return false
 	}
 
-	if backups != 2 {
-		t.Errorf("not 2 backups: %d", backups)
+	for _, peer := range s.replicas {
+		if s.down[peer.state.ReplicaNumber] {
+			continue
+		}
+
+		if peer.state.ViewNumber != highestView {
+			return false
+		}
+
+		if peer.state.Status != StatusNormal {
+			return false
+		}
 	}
+
+	return true
 }
 
-func TestViewChange(t *testing.T) {
-	tc, cleanup := createCluster(3, false, nil)
-	time.Sleep(1 * time.Second)
-	for _, replica := range tc.replicas {
-		replica.Stop()
-	}
+func (s *Sim) IsInViewChange() bool {
+	for _, peer := range s.replicas {
+		if s.down[peer.state.ReplicaNumber] {
+			continue
+		}
 
-	primary := tc.replicas[0]
-	for _, replica := range tc.replicas {
-		if replica.state.Role == RolePrimary {
-			primary = replica
-			break
+		if peer.state.Status != StatusViewChange {
+			return false
 		}
 	}
 
-	backups := []*Replica{}
-	for _, replica := range tc.replicas {
-		if replica != primary {
-			go replica.Run()
-			backups = append(backups, replica)
+	return true
+}
+
+func (s *Sim) IsCommitted(clientId ClientId, requestNumber RequestNumber) bool {
+	primary := s.getPrimary()
+	for logIndex, logEntry := range primary.state.Log {
+		if logEntry.ClientId == clientId && logEntry.RequestNumber == requestNumber {
+			opNumber := logIndex + 1
+			if primary.state.CommitNumber >= CommitNumber(opNumber) {
+				return true
+			}
+
+			return false
+		}
+	}
+	return false
+}
+
+func (s *Sim) IsResponded(requestNumber RequestNumber) bool {
+	for _, reply := range s.replies {
+		if reply.RequestNumber == requestNumber {
+			return true
 		}
 	}
 
-	time.Sleep(1 * time.Second)
-	var newPrimary *Replica
-	for _, replica := range backups {
-		replica.Stop()
-		if replica.state.Role == RolePrimary {
-			newPrimary = replica
-			break
-		}
+	return false
+}
+
+func TestInitialViewChangeSim(t *testing.T) {
+	s := NewSim(t, 3, 42)
+	s.RunUntil(s.IsOperational, 100)
+}
+
+func TestViewChangeWithOneDown(t *testing.T) {
+	s := NewSim(t, 3, 42)
+	s.RunUntil(s.IsOperational, 100)
+
+	// stop primary
+	primary := s.getPrimary()
+	s.stop(primary.state.ReplicaNumber)
+
+	// remaining peers enter view change
+	s.RunUntil(s.IsInViewChange, 100)
+
+	// remaining peers can complete view change
+	s.RunUntil(s.IsOperational, 100)
+}
+
+func TestProcessSim(t *testing.T) {
+	s := NewSim(t, 3, 42)
+	s.RunUntil(s.IsOperational, 100)
+
+	clientId := ClientId(555)
+	reqId := RequestNumber(123)
+	operation := []byte("lol")
+	primary := s.getPrimary()
+	s.Send(ClientCorrespondent(clientId), PeerCorrespondent(primary.state.GetConfiguration()),
+		&ProcessRequest{
+			RequestNumber: reqId,
+			ClientId:      clientId,
+			Operation:     operation,
+		}, s.now+1)
+
+	s.RunUntil(func() bool { return s.IsCommitted(clientId, reqId) }, 100)
+	if !bytes.Equal(s.executed[primary.state.ReplicaNumber][0], operation) {
+		t.Error("wrong payload")
 	}
 
-	if newPrimary == nil {
-		t.Error("no new primary")
-	}
-
-	for _, replica := range tc.replicas {
-		go replica.Run()
-	}
-	cleanup()
+	s.RunUntil(func() bool { return s.IsResponded(reqId) }, 100)
 }
