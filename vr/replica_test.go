@@ -2,9 +2,10 @@ package vr
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"math/rand/v2"
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -143,8 +144,8 @@ func (s *Sim) deliver() {
 	s.t.Helper()
 
 	newMsgs := []inFlight{}
-	sort.Slice(s.network, func(i, j int) bool {
-		return s.network[i].deliverAt < s.network[j].deliverAt
+	slices.SortStableFunc(s.network, func(a, b inFlight) int {
+		return cmp.Compare(a.deliverAt, b.deliverAt)
 	})
 
 	i := 0

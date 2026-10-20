@@ -235,7 +235,7 @@ func (r *Replica) handleReq(incoming Incoming) {
 	switch req := incoming.Req.(type) {
 	case *ProcessRequest:
 		slog.Info("handleReq ProcessRequest", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleProcessRequest(req, incoming.From.Client)
+		r.handleProcessRequest(req, req.ClientId)
 	case *Prepare:
 		slog.Info("handleReq Prepare", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
 		r.handlePrepare(incoming.From.Peer, req)

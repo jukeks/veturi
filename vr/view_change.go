@@ -176,6 +176,11 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 		return
 	}
 
+	if r.getPrimaryForView(r.state.ViewNumber).ID != r.state.ReplicaNumber {
+		slog.Error("got do-view-change for view i can't be primary for")
+		return
+	}
+
 	viewChange, ok := r.viewChanges[req.ViewNumber]
 	if !ok {
 		viewChange = NewViewChange()
