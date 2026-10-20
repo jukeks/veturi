@@ -13,7 +13,11 @@ func (r *Replica) handleGetState(from ReplicaConfiguration, req *GetState) {
 		return
 	}
 	if req.OpNumber > r.state.OpNumber {
-		slog.Error("peer requested newer state than i have")
+		slog.Info("peer requested newer state than i have")
+		return
+	}
+	if r.lastNormalView != r.state.ViewNumber {
+		slog.Info("can't answer to GetState as not in normal view yet")
 		return
 	}
 
@@ -30,18 +34,25 @@ func (r *Replica) handleNewState(from ReplicaConfiguration, req *NewState) {
 		return
 	}
 
-	r.stateRequested = false
-	r.ticksSinceRequest = 0
-
 	if req.OpNumber > r.state.OpNumber {
 		logSuffix := req.Log
-		if req.OpNumber-OpNumber(len(logSuffix)) != r.state.OpNumber {
-			opDiff := req.OpNumber - r.state.OpNumber
-			logSuffix = logSuffix[OpNumber(len(logSuffix))-opDiff:]
+		newStateLogStartOp := req.OpNumber - OpNumber(len(req.Log))
+		if newStateLogStartOp > r.state.OpNumber {
+			// gap!
+			slog.Info("NewState does not follow my log, dropping",
+				"start", newStateLogStartOp, "my op", r.state.OpNumber)
+			return
+		}
+		if newStateLogStartOp < r.state.OpNumber {
+			// already had a new op added to log, dropping start of newStateLog
+			logSuffix = logSuffix[r.state.OpNumber-newStateLogStartOp:]
 		}
 		r.state.Log = append(r.state.Log, logSuffix...)
 		r.state.OpNumber = req.OpNumber
 	}
+
+	r.stateRequested = false
+	r.ticksSinceRequest = 0
 
 	r.commitUpTo(req.CommitNumber)
 	r.lastNormalView = r.state.ViewNumber

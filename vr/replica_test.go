@@ -105,11 +105,11 @@ func (s *Sim) getPrimary() *Replica {
 	return nil
 }
 
-func (s *Sim) stop(id ReplicaNumber) {
+func (s *Sim) pause(id ReplicaNumber) {
 	s.down[id] = true
 }
 
-func (s *Sim) proceed(id ReplicaNumber) {
+func (s *Sim) resume(id ReplicaNumber) {
 	delete(s.down, id)
 }
 
@@ -335,7 +335,7 @@ func TestViewChangeWithOneDown(t *testing.T) {
 
 	// stop primary
 	primary := s.getPrimary()
-	s.stop(primary.state.ReplicaNumber)
+	s.pause(primary.state.ReplicaNumber)
 
 	// remaining peers enter view change
 	s.RunUntil(s.IsInViewChange, 100)
@@ -349,7 +349,7 @@ func TestViewChangeWithOneDown(t *testing.T) {
 	}
 
 	// old primary comes back
-	s.proceed(primary.state.ReplicaNumber)
+	s.resume(primary.state.ReplicaNumber)
 	s.RunUntil(s.AllNodesOperational, 100)
 
 	newNewPrimary := s.getPrimary()
