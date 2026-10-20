@@ -82,6 +82,9 @@ func (s *Sim) getPeer(id ReplicaNumber) *Replica {
 
 func (s *Sim) getPrimary() *Replica {
 	for _, peer := range s.replicas {
+		if s.down[peer.state.ReplicaNumber] {
+			continue
+		}
 		if peer.state.Role == RolePrimary {
 			return peer
 		}
@@ -242,6 +245,42 @@ func (s *Sim) IsOperational() bool {
 	return true
 }
 
+func (s *Sim) AllNodesOperational() bool {
+	primaries := 0
+	backups := 0
+	highestView := ViewNumber(0)
+	for _, peer := range s.replicas {
+		if peer.state.Role == RolePrimary {
+			primaries++
+		} else {
+			backups++
+		}
+		if peer.state.ViewNumber > highestView {
+			highestView = peer.state.ViewNumber
+		}
+	}
+
+	if primaries != 1 {
+		return false
+	}
+
+	for _, peer := range s.replicas {
+		if s.down[peer.state.ReplicaNumber] {
+			continue
+		}
+
+		if peer.state.ViewNumber != highestView {
+			return false
+		}
+
+		if peer.state.Status != StatusNormal {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (s *Sim) IsInViewChange() bool {
 	for _, peer := range s.replicas {
 		if s.down[peer.state.ReplicaNumber] {
@@ -299,6 +338,20 @@ func TestViewChangeWithOneDown(t *testing.T) {
 
 	// remaining peers can complete view change
 	s.RunUntil(s.IsOperational, 100)
+
+	newPrimary := s.getPrimary()
+	if newPrimary.state.ReplicaNumber == primary.state.ReplicaNumber {
+		t.Fatal("old primary is new primary")
+	}
+
+	// old primary comes back
+	s.proceed(primary.state.ReplicaNumber)
+	s.RunUntil(s.AllNodesOperational, 100)
+
+	newNewPrimary := s.getPrimary()
+	if newPrimary.state.ReplicaNumber != newNewPrimary.state.ReplicaNumber {
+		t.Fatal("old primary coming back caused view change")
+	}
 }
 
 func TestProcessSim(t *testing.T) {

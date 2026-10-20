@@ -252,7 +252,7 @@ func (r *Replica) handleReq(incoming Incoming) {
 		slog.Info("handleReq StartView", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
 		r.handleStartView(incoming.From.Peer, req)
 	default:
-		panic("lol")
+		slog.Error("received message that is not recognized", "req", incoming.Req)
 	}
 }
 
