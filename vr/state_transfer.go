@@ -6,7 +6,7 @@ import (
 )
 
 func (r *Replica) handleGetState(from ReplicaConfiguration, req *GetState) {
-	if r.checkView(req.ViewNumber) {
+	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
 	if r.state.Status != StatusNormal {
@@ -30,7 +30,7 @@ func (r *Replica) handleGetState(from ReplicaConfiguration, req *GetState) {
 }
 
 func (r *Replica) handleNewState(from ReplicaConfiguration, req *NewState) {
-	if r.checkView(req.ViewNumber) {
+	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
 
@@ -53,6 +53,7 @@ func (r *Replica) handleNewState(from ReplicaConfiguration, req *NewState) {
 
 	r.stateRequested = false
 	r.ticksSinceRequest = 0
+	r.ticksWithGap = 0
 
 	r.commitUpTo(req.CommitNumber)
 	r.lastNormalView = r.state.ViewNumber

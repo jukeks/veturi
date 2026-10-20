@@ -104,7 +104,7 @@ func TestCommitBeyondLogRequestsState(t *testing.T) {
 	}
 }
 
-func TestStateTransferSim(t *testing.T) {
+func TestStateTransfer(t *testing.T) {
 	s := NewSim(t, 3, 42)
 	s.RunUntil(s.IsOperational, 100)
 
@@ -151,5 +151,43 @@ func TestStateTransferSim(t *testing.T) {
 		if !bytes.Equal(got[i], want[i]) {
 			t.Errorf("op %d: old primary executed %q, new primary %q", i+1, got[i], want[i])
 		}
+	}
+}
+
+func TestEarlyPrepareTimeout(t *testing.T) {
+	configs := testConfigs()
+	backup := NewTestReplica(1, RoleBackup, configs)
+	primary := PeerCorrespondent(configs[0])
+
+	// op = 2, can't process yet
+	backup.Step(Incoming{From: primary, Req: getTestPrepare(0, 2, 0)})
+
+	stateRequested := false
+	for range PrimaryTimeoutTicks - 1 {
+		gs := getStates(backup.Tick())
+		if len(gs) > 0 {
+			stateRequested = true
+			break
+		}
+	}
+
+	if !stateRequested {
+		t.Error("backup didn't request state for missing prepares")
+	}
+}
+
+func TestMissedStartView(t *testing.T) {
+	configs := testConfigs()
+	backup := NewTestReplica(1, RoleBackup, configs)
+	primary := PeerCorrespondent(configs[0])
+
+	backup.Step(Incoming{From: primary, Req: &StartViewChange{
+		ViewNumber:    2,
+		ReplicaNumber: primary.Peer.ID,
+	}})
+	out := backup.Step(Incoming{From: primary, Req: getTestPrepare(2, 1, 0)})
+	gs := getStates(out)
+	if len(gs) == 0 {
+		t.Fatal("getstate was not requested")
 	}
 }

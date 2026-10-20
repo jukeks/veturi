@@ -59,7 +59,7 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 }
 
 func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
-	if r.checkView(req.ViewNumber) {
+	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
 	if r.state.Role != RoleBackup {
@@ -154,7 +154,7 @@ func (r *Replica) updateOKUpTo(lastOp OpNumber, peer ReplicaNumber) {
 }
 
 func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
-	if r.checkView(req.ViewNumber) {
+	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
 
@@ -185,7 +185,7 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 }
 
 func (r *Replica) handleCommit(_ ReplicaConfiguration, req *Commit) {
-	if r.checkView(req.ViewNumber) {
+	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
 	if r.state.Status != StatusNormal {

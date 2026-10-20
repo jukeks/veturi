@@ -57,13 +57,14 @@ func (vc *ViewChange) longestLogAndHighestCommit() (*DoViewChange, CommitNumber)
 	return longestLog, highestCommit.CommitNumber
 }
 
-func (r *Replica) checkView(reqView ViewNumber) bool {
+func (r *Replica) checkViewForNormalOperations(reqView ViewNumber) bool {
 	if r.state.ViewNumber > reqView {
 		slog.Info("req from older view, dropping")
 		return true
 	}
-	if r.state.ViewNumber < reqView {
-		r.moveToNewerView(reqView)
+	if r.state.ViewNumber < reqView ||
+		r.state.Status == StatusViewChange {
+		r.joinActiveView(reqView)
 	}
 
 	return false
@@ -117,7 +118,7 @@ func (r *Replica) startNormal(v ViewNumber, role ReplicaRole,
 	}
 }
 
-func (r *Replica) moveToNewerView(v ViewNumber) {
+func (r *Replica) joinActiveView(v ViewNumber) {
 	r.resetViewState(v)
 	r.state.OpNumber = OpNumber(r.state.CommitNumber)
 	r.state.Log = r.state.Log[:r.state.OpNumber]

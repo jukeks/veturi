@@ -144,6 +144,8 @@ type Replica struct {
 
 	stateRequested    bool
 	ticksSinceRequest int
+
+	ticksWithGap int
 }
 
 func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
@@ -294,6 +296,8 @@ func (r *Replica) send(msgs []Outgoing) {
 	}
 }
 
+const EarlyPrepareTimeout = 5
+
 func (r *Replica) handleTick() {
 	if r.state.Role == RolePrimary {
 		for _, peer := range r.peers() {
@@ -306,6 +310,15 @@ func (r *Replica) handleTick() {
 		r.ticksSincePrimary++
 		if r.ticksSincePrimary >= r.timeoutTicks {
 			r.initiateViewChange()
+		}
+
+		if len(r.earlyPrepares) == 0 {
+			r.ticksWithGap = 0
+		} else {
+			r.ticksWithGap++
+			if r.ticksWithGap >= EarlyPrepareTimeout {
+				r.requestState()
+			}
 		}
 	}
 
