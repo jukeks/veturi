@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand/v2"
+	"sort"
 	"testing"
 )
 
@@ -70,6 +71,19 @@ func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
 	return s
 }
 
+func (s *Sim) getActivePeers() []*Replica {
+	peers := []*Replica{}
+	for _, peer := range s.replicas {
+		if s.isDown(peer.state.ReplicaNumber) {
+			continue
+		}
+
+		peers = append(peers, peer)
+	}
+
+	return peers
+}
+
 func (s *Sim) getPeer(id ReplicaNumber) *Replica {
 	for _, peer := range s.replicas {
 		if peer.state.ReplicaNumber == id {
@@ -81,10 +95,7 @@ func (s *Sim) getPeer(id ReplicaNumber) *Replica {
 }
 
 func (s *Sim) getPrimary() *Replica {
-	for _, peer := range s.replicas {
-		if s.down[peer.state.ReplicaNumber] {
-			continue
-		}
+	for _, peer := range s.getActivePeers() {
 		if peer.state.Role == RolePrimary {
 			return peer
 		}
@@ -99,6 +110,10 @@ func (s *Sim) stop(id ReplicaNumber) {
 
 func (s *Sim) proceed(id ReplicaNumber) {
 	delete(s.down, id)
+}
+
+func (s *Sim) isDown(id ReplicaNumber) bool {
+	return s.down[id]
 }
 
 type Condition func() bool
@@ -128,6 +143,9 @@ func (s *Sim) deliver() {
 	s.t.Helper()
 
 	newMsgs := []inFlight{}
+	sort.Slice(s.network, func(i, j int) bool {
+		return s.network[i].deliverAt < s.network[j].deliverAt
+	})
 
 	i := 0
 	for i = 0; i < len(s.network); i++ {
@@ -138,18 +156,18 @@ func (s *Sim) deliver() {
 
 		if msg.out.To.Type == CorrespondentPeer {
 			peer := s.getPeer(msg.out.To.Peer.ID)
-			if s.down[peer.state.ReplicaNumber] {
+			if s.isDown(peer.state.ReplicaNumber) {
 				continue
 			}
 
 			msgs := peer.Step(msg.toIncoming())
 
 			newInflights := make([]inFlight, len(msgs))
-			for i, msg := range msgs {
-				newInflights[i] = inFlight{
+			for j, outGoingMsg := range msgs {
+				newInflights[j] = inFlight{
 					deliverAt: s.now + 1,
 					from:      PeerCorrespondent(peer.state.GetConfiguration()),
-					out:       msg,
+					out:       outGoingMsg,
 				}
 			}
 
@@ -170,7 +188,7 @@ func (s *Sim) tick() {
 
 	s.deliver()
 	for _, peer := range s.replicas {
-		if s.down[peer.state.ReplicaNumber] {
+		if s.isDown(peer.state.ReplicaNumber) {
 			continue
 		}
 
@@ -196,7 +214,7 @@ func (s *Sim) RunUntil(condition Condition, maxTicks int) {
 }
 
 func (s *Sim) HasPrimary() bool {
-	for _, peer := range s.replicas {
+	for _, peer := range s.getActivePeers() {
 		if peer.state.Role == RolePrimary {
 			return true
 		}
@@ -209,11 +227,8 @@ func (s *Sim) IsOperational() bool {
 	primaries := 0
 	backups := 0
 	highestView := ViewNumber(0)
-	for _, peer := range s.replicas {
-		if s.down[peer.state.ReplicaNumber] {
-			continue
-		}
 
+	for _, peer := range s.getActivePeers() {
 		if peer.state.Role == RolePrimary {
 			primaries++
 		} else {
@@ -228,11 +243,7 @@ func (s *Sim) IsOperational() bool {
 		return false
 	}
 
-	for _, peer := range s.replicas {
-		if s.down[peer.state.ReplicaNumber] {
-			continue
-		}
-
+	for _, peer := range s.getActivePeers() {
 		if peer.state.ViewNumber != highestView {
 			return false
 		}
@@ -265,10 +276,6 @@ func (s *Sim) AllNodesOperational() bool {
 	}
 
 	for _, peer := range s.replicas {
-		if s.down[peer.state.ReplicaNumber] {
-			continue
-		}
-
 		if peer.state.ViewNumber != highestView {
 			return false
 		}
@@ -282,11 +289,7 @@ func (s *Sim) AllNodesOperational() bool {
 }
 
 func (s *Sim) IsInViewChange() bool {
-	for _, peer := range s.replicas {
-		if s.down[peer.state.ReplicaNumber] {
-			continue
-		}
-
+	for _, peer := range s.getActivePeers() {
 		if peer.state.Status != StatusViewChange {
 			return false
 		}

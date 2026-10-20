@@ -149,7 +149,7 @@ func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
 	state.ReplicaNumber = id
 	state.ClusterMembers = clusterMembers
 
-	return &Replica{
+	r := Replica{
 		state:         state,
 		incoming:      make(chan Incoming, 100),
 		outgoing:      make(chan Outgoing, 100),
@@ -161,6 +161,9 @@ func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
 		viewChanges:   map[ViewNumber]*ViewChange{},
 		rand:          rand.New(rand.NewPCG(seed, uint64(id))),
 	}
+
+	r.resetTimer()
+	return &r
 }
 
 func (r *Replica) Request(req ProcessRequest) {
