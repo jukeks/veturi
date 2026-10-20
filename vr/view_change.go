@@ -2,6 +2,7 @@ package vr
 
 import (
 	"log/slog"
+	"slices"
 )
 
 type ViewChange struct {
@@ -72,6 +73,8 @@ func (r *Replica) resetViewState(v ViewNumber) {
 	r.state.ViewNumber = v
 	r.state.Role = RoleBackup
 	r.resetTimer()
+	r.stateRequested = false
+	r.ticksSinceRequest = 0
 
 	clear(r.inflight)
 	clear(r.earlyPrepares)
@@ -119,8 +122,7 @@ func (r *Replica) moveToNewerView(v ViewNumber) {
 	r.state.OpNumber = OpNumber(r.state.CommitNumber)
 	r.state.Log = r.state.Log[:r.state.OpNumber]
 	r.state.Status = StatusNormal
-	// do not set lastNormalView: this replica has only the committed prefix of view v
-	// TODO: send GETSTATE; after NEWSTATE, set lastNormalView = v
+	r.requestState()
 }
 
 func (r *Replica) initiateViewChange() {
@@ -155,7 +157,7 @@ func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartVie
 	viewPrimary := r.getPrimaryForView(req.ViewNumber)
 	r.sendPeer(viewPrimary, &DoViewChange{
 		ViewNumber:    r.state.ViewNumber,
-		Log:           r.state.Log,
+		Log:           slices.Clone(r.state.Log),
 		LastView:      r.lastNormalView,
 		OpNumber:      r.state.OpNumber,
 		CommitNumber:  r.state.CommitNumber,
@@ -200,7 +202,7 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 	for _, peer := range r.peers() {
 		r.sendPeer(peer, &StartView{
 			ViewNumber:   r.state.ViewNumber,
-			Log:          r.state.Log,
+			Log:          slices.Clone(r.state.Log),
 			OpNumber:     r.state.OpNumber,
 			CommitNumber: r.state.CommitNumber,
 		})

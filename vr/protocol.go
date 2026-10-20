@@ -4,6 +4,8 @@ type Request interface {
 	request()
 }
 
+/* Normal operations */
+
 type ProcessRequest struct {
 	RequestNumber RequestNumber
 	ClientId      ClientId
@@ -44,6 +46,8 @@ type Commit struct {
 	CommitNumber CommitNumber
 }
 
+/* View Changes */
+
 type StartViewChange struct {
 	ViewNumber    ViewNumber
 	ReplicaNumber ReplicaNumber
@@ -65,6 +69,21 @@ type StartView struct {
 	CommitNumber CommitNumber
 }
 
+/* State Transfer */
+
+type GetState struct {
+	ViewNumber ViewNumber
+	OpNumber   OpNumber
+	BackupId   ReplicaNumber
+}
+
+type NewState struct {
+	ViewNumber   ViewNumber
+	Log          []*ProcessRequest
+	OpNumber     OpNumber
+	CommitNumber CommitNumber
+}
+
 func (*Prepare) request()         {}
 func (*PrepareOK) request()       {}
 func (*Commit) request()          {}
@@ -73,3 +92,5 @@ func (*ProcessReply) request()    {}
 func (*StartViewChange) request() {}
 func (*DoViewChange) request()    {}
 func (*StartView) request()       {}
+func (*GetState) request()        {}
+func (*NewState) request()        {}

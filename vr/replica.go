@@ -141,6 +141,9 @@ type Replica struct {
 	viewChanges    map[ViewNumber]*ViewChange
 
 	rand *rand.Rand
+
+	stateRequested    bool
+	ticksSinceRequest int
 }
 
 func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
@@ -254,6 +257,12 @@ func (r *Replica) handleReq(incoming Incoming) {
 	case *StartView:
 		slog.Info("handleReq StartView", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
 		r.handleStartView(incoming.From.Peer, req)
+	case *GetState:
+		slog.Info("handleReq GetState", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
+		r.handleGetState(incoming.From.Peer, req)
+	case *NewState:
+		slog.Info("handleReq NewState", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
+		r.handleNewState(incoming.From.Peer, req)
 	default:
 		slog.Error("received message that is not recognized", "req", incoming.Req)
 	}
@@ -297,6 +306,13 @@ func (r *Replica) handleTick() {
 		r.ticksSincePrimary++
 		if r.ticksSincePrimary >= r.timeoutTicks {
 			r.initiateViewChange()
+		}
+	}
+
+	if r.stateRequested {
+		r.ticksSinceRequest++
+		if r.ticksSinceRequest > StateRequestTimeout {
+			r.requestState()
 		}
 	}
 }

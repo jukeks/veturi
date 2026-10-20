@@ -210,6 +210,7 @@ func (r *Replica) backupCommit(primaryCommitNumber CommitNumber) {
 		slog.Info("can't commit up to primaryCommitNumber, clamping", "my op",
 			r.state.OpNumber, "primary commit", primaryCommitNumber)
 		lastCommitable = CommitNumber(r.state.OpNumber)
+		r.requestState()
 	}
 
 	r.commitUpTo(lastCommitable)
