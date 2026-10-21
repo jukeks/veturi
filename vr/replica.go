@@ -3,9 +3,7 @@ package vr
 import (
 	"fmt"
 	"log/slog"
-	"maps"
 	"math/rand/v2"
-	"slices"
 	"time"
 )
 
@@ -99,11 +97,6 @@ type Outgoing struct {
 	Msg Message
 }
 
-type ReplyState struct {
-	oks        map[ReplicaNumber]bool
-	ticksSince int
-}
-
 type UpCall func(Payload) Payload
 
 type Replica struct {
@@ -114,9 +107,14 @@ type Replica struct {
 	stop           chan bool
 	stopped        chan bool
 
+	upCall UpCall
+
 	earlyPrepares map[OpNumber]*Prepare
-	inflight      map[OpNumber]ReplyState
-	upCall        UpCall
+
+	// on the primary: the highest op that each peer acknowledged in this view
+	acked map[ReplicaNumber]OpNumber
+	// the tick of the last progress of each peer, for the resends
+	lastAck map[ReplicaNumber]int
 
 	ticksSincePrimaryComms int
 	primaryTimeoutTicks    int
@@ -153,8 +151,9 @@ func NewReplica(id ReplicaNumber, clusterMembers []ReplicaNumber,
 		stop:              make(chan bool, 1),
 		stopped:           make(chan bool, 1),
 		earlyPrepares:     map[OpNumber]*Prepare{},
-		inflight:          map[OpNumber]ReplyState{},
 		upCall:            upCall,
+		acked:             map[ReplicaNumber]OpNumber{},
+		lastAck:           map[ReplicaNumber]int{},
 		viewChanges:       map[ViewNumber]*ViewChange{},
 		rand:              rand.New(rand.NewPCG(seed, uint64(id))),
 		recoveryResponses: map[ReplicaNumber]*RecoveryResponse{},
@@ -319,22 +318,16 @@ func (r *Replica) handleTick() {
 				ViewNumber:   r.state.ViewNumber,
 				CommitNumber: r.state.CommitNumber,
 			})
-		}
 
-		// sorted for deterministic replay in tests
-		for _, op := range slices.Sorted(maps.Keys(r.inflight)) {
-			replyState := r.inflight[op]
-			replyState.ticksSince++
-			if replyState.ticksSince >= PrepareOkTimeout {
-				logEntry := r.state.Log[op-1]
+			r.lastAck[peer]++
+			if r.lastAck[peer] < PrepareOkTimeout {
+				continue
+			}
+			r.lastAck[peer] = 0
 
-				replyState.ticksSince = 0
-
-				for _, peer := range r.peers() {
-					if replyState.oks[peer] {
-						continue
-					}
-
+			if r.acked[peer] < r.state.OpNumber {
+				for op := r.acked[peer] + 1; op <= r.state.OpNumber; op++ {
+					logEntry := r.state.Log[op-1]
 					r.sendPeer(peer, &Prepare{
 						ViewNumber:   r.state.ViewNumber,
 						Operation:    *logEntry,
@@ -343,7 +336,6 @@ func (r *Replica) handleTick() {
 					})
 				}
 			}
-			r.inflight[op] = replyState
 		}
 	} else {
 		r.ticksSincePrimaryComms++

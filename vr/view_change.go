@@ -77,8 +77,9 @@ func (r *Replica) resetViewState(v ViewNumber) {
 	r.stateRequested = false
 	r.ticksSinceStateRequest = 0
 
-	clear(r.inflight)
 	clear(r.earlyPrepares)
+	clear(r.acked)
+	clear(r.lastAck)
 
 	for view := range r.viewChanges {
 		if view < v {
@@ -106,15 +107,15 @@ func (r *Replica) startNormal(v ViewNumber, role ReplicaRole,
 	r.state.OpNumber = op
 	r.commitUpTo(commit)
 
-	for n := OpNumber(r.state.CommitNumber) + 1; n <= op; n++ {
-		if role == RolePrimary {
-			r.inflight[n] = ReplyState{
-				oks: map[ReplicaNumber]bool{r.state.ReplicaNumber: true},
-			}
-		} else {
-			r.sendPeer(r.getPrimaryForView(v),
-				&PrepareOK{ViewNumber: v, OpNumber: n, From: r.state.ReplicaNumber})
+	if role == RolePrimary {
+		for _, peer := range r.peers() {
+			r.acked[peer] = OpNumber(r.state.CommitNumber)
 		}
+	}
+
+	if role == RoleBackup {
+		r.sendPeer(r.getPrimaryForView(v),
+			&PrepareOK{ViewNumber: v, OpNumber: op, From: r.state.ReplicaNumber})
 	}
 }
 

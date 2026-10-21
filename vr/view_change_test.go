@@ -35,8 +35,15 @@ func TestViewChangeUsesHighestCommit(t *testing.T) {
 	if primary.state.CommitNumber != 1 {
 		t.Errorf("primary commit %d, want 1", primary.state.CommitNumber)
 	}
-	if len(primary.inflight) != 0 {
-		t.Errorf("primary waits for votes for %d committed ops", len(primary.inflight))
+	// The primary must not wait for votes for the committed op, so it
+	// must not send it again.
+	for range PrepareOkTimeout + 1 {
+		for _, o := range primary.Tick() {
+			if p, ok := o.Msg.(*Prepare); ok {
+				t.Errorf("primary sends Prepare for op %d to %d, but op 1 is committed",
+					p.OpNumber, o.To.Peer)
+			}
+		}
 	}
 	for _, o := range out {
 		if sv, ok := o.Msg.(*StartView); ok && sv.CommitNumber != 1 {

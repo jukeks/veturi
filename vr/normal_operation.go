@@ -44,10 +44,6 @@ func (r *Replica) handleProcessRequest(req *ClientRequest) {
 	r.state.Log = append(r.state.Log, req)
 	r.state.OpNumber++
 
-	r.inflight[r.state.OpNumber] = ReplyState{oks: map[ReplicaNumber]bool{
-		r.state.ReplicaNumber: true,
-	}}
-
 	for _, peer := range r.peers() {
 		r.sendPeer(peer, &Prepare{
 			ViewNumber:   r.state.ViewNumber,
@@ -125,62 +121,30 @@ func (r *Replica) handleEarlyPrepares() {
 	}
 }
 
-func (r *Replica) earliestUncommittedOpWithQuorum() OpNumber {
-	keys := make([]OpNumber, 0, len(r.inflight))
-	for on := range r.inflight {
-		keys = append(keys, on)
+func (r *Replica) quorumOp() OpNumber {
+	ops := []OpNumber{r.state.OpNumber}
+	for _, peer := range r.peers() {
+		ops = append(ops, r.acked[peer])
 	}
-	slices.Sort(keys)
-
-	earliest := keys[0]
-
-	replyState := r.inflight[earliest]
-	if len(replyState.oks) < r.quorum() {
-		// can't commit yet
-		return 0
-	}
-
-	return earliest
-}
-
-func (r *Replica) updateOKUpTo(lastOp OpNumber, peer ReplicaNumber) {
-	// mark all prepares ok up to lastOp
-	for key := range r.inflight {
-		replyState := r.inflight[key]
-		if key <= lastOp {
-			replyState.oks[peer] = true
-		}
-	}
+	slices.Sort(ops)                // n is 3 or 5
+	return ops[len(ops)-r.quorum()] // the quorum()-th highest
 }
 
 func (r *Replica) handlePrepareOK(req *PrepareOK) {
 	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
-
-	_, ok := r.inflight[req.OpNumber]
-	if !ok {
-		slog.Info("got PrepareOK for unknown op", "PrepareOK", req)
+	if r.state.Role != RolePrimary || r.state.Status != StatusNormal {
 		return
 	}
-	r.updateOKUpTo(req.OpNumber, req.From)
+	if req.OpNumber > r.state.OpNumber || req.OpNumber <= r.acked[req.From] {
+		return
+	}
 
-	// check inflight
-	for len(r.inflight) > 0 {
-		earliestOp := r.earliestUncommittedOpWithQuorum()
-		if earliestOp == 0 {
-			// no quorum yet
-			break
-		}
-
-		if earliestOp != OpNumber(r.state.CommitNumber)+1 {
-			// no quorum yet for next to be committed
-			break
-		}
-
-		delete(r.inflight, earliestOp)
-
-		r.commitUpTo(CommitNumber(earliestOp))
+	r.acked[req.From] = req.OpNumber
+	r.lastAck[req.From] = 0
+	if op := r.quorumOp(); CommitNumber(op) > r.state.CommitNumber {
+		r.commitUpTo(CommitNumber(op))
 	}
 }
 
