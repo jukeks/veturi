@@ -1,7 +1,6 @@
 package vr
 
 import (
-	"bytes"
 	"fmt"
 	"testing"
 )
@@ -104,26 +103,22 @@ func TestCommitBeyondLogRequestsState(t *testing.T) {
 	}
 }
 
-func TestStateTransfer(t *testing.T) {
-	s := NewSim(t, 3, 42)
-	s.RunUntil(s.IsOperational, 100)
+// The old primary misses a view change and the requests that are committed
+// in the new view. When it comes back, it must catch up.
+func stateTransferScenario(t *testing.T, s *Sim, strict bool) {
+	s.RunUntil(s.IsOperational, 200)
 
 	oldPrimary := s.getPrimary()
 	s.pause(oldPrimary.state.ReplicaNumber)
-	s.RunUntil(s.IsOperational, 100)
-	newPrimary := s.getPrimary()
+	s.RunUntil(func() bool {
+		p := s.getPrimary()
+		return s.IsOperational() && p != nil && p != oldPrimary
+	}, 200)
 
 	// Commit some requests in the new view, while the old primary is down.
 	clientId := ClientId(555)
 	for req := RequestNumber(1); req <= 3; req++ {
-		s.Send(ClientCorrespondent(clientId),
-			PeerCorrespondent(newPrimary.state.GetConfiguration()),
-			&ProcessRequest{
-				ClientId:      clientId,
-				RequestNumber: req,
-				Operation:     []byte(fmt.Sprintf("op %d", req)),
-			}, s.now+1)
-		s.RunUntil(func() bool { return s.IsCommitted(clientId, req) }, 100)
+		s.RequestUntilCommitted(clientId, req, fmt.Appendf(nil, "op %d", req), 300)
 	}
 	if oldPrimary.state.OpNumber != 0 {
 		t.Fatalf("old primary op %d before it comes back, want 0", oldPrimary.state.OpNumber)
@@ -131,27 +126,21 @@ func TestStateTransfer(t *testing.T) {
 
 	// The old primary comes back and must catch up.
 	s.resume(oldPrimary.state.ReplicaNumber)
-	s.RunUntil(func() bool {
-		return oldPrimary.state.ViewNumber == newPrimary.state.ViewNumber &&
-			oldPrimary.lastNormalView == newPrimary.state.ViewNumber &&
-			oldPrimary.state.OpNumber == newPrimary.state.OpNumber &&
-			oldPrimary.state.CommitNumber == newPrimary.state.CommitNumber
-	}, 100)
+	s.RunUntil(s.AllCaughtUp, 300)
 
-	if oldPrimary.state.Role != RoleBackup {
+	if strict && oldPrimary.state.Role != RoleBackup {
 		t.Errorf("old primary role %d, want backup", oldPrimary.state.Role)
 	}
+}
 
-	got := s.executed[oldPrimary.state.ReplicaNumber]
-	want := s.executed[newPrimary.state.ReplicaNumber]
-	if len(got) != len(want) {
-		t.Fatalf("old primary executed %d ops, new primary %d", len(got), len(want))
-	}
-	for i := range want {
-		if !bytes.Equal(got[i], want[i]) {
-			t.Errorf("op %d: old primary executed %q, new primary %q", i+1, got[i], want[i])
-		}
-	}
+func TestStateTransfer(t *testing.T) {
+	stateTransferScenario(t, NewSim(t, 3, 42), true)
+}
+
+func FuzzStateTransfer(f *testing.F) {
+	fuzzSim(f, 3, defaultFaults, func(t *testing.T, s *Sim) {
+		stateTransferScenario(t, s, false)
+	})
 }
 
 func TestEarlyPrepareTimeout(t *testing.T) {

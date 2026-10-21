@@ -2,7 +2,9 @@ package vr
 
 import (
 	"log/slog"
+	"maps"
 	"math/rand/v2"
+	"slices"
 	"time"
 )
 
@@ -117,7 +119,8 @@ type Outgoing struct {
 }
 
 type ReplyState struct {
-	oks map[ReplicaNumber]bool
+	oks        map[ReplicaNumber]bool
+	ticksSince int
 }
 
 type UpCall func(Payload) Payload
@@ -297,6 +300,7 @@ func (r *Replica) send(msgs []Outgoing) {
 }
 
 const EarlyPrepareTimeout = 5
+const PrepareOkTimeout = 3
 
 func (r *Replica) handleTick() {
 	if r.state.Role == RolePrimary {
@@ -305,6 +309,31 @@ func (r *Replica) handleTick() {
 				ViewNumber:   r.state.ViewNumber,
 				CommitNumber: r.state.CommitNumber,
 			})
+		}
+
+		// sorted for deterministic replay in tests
+		for _, op := range slices.Sorted(maps.Keys(r.inflight)) {
+			replyState := r.inflight[op]
+			replyState.ticksSince++
+			if replyState.ticksSince >= PrepareOkTimeout {
+				logEntry := r.state.Log[op-1]
+
+				replyState.ticksSince = 0
+
+				for _, peer := range r.peers() {
+					if replyState.oks[peer.ID] {
+						continue
+					}
+
+					r.sendPeer(peer, &Prepare{
+						ViewNumber:   r.state.ViewNumber,
+						Operation:    *logEntry,
+						OpNumber:     op,
+						CommitNumber: r.state.CommitNumber,
+					})
+				}
+			}
+			r.inflight[op] = replyState
 		}
 	} else {
 		r.ticksSincePrimary++

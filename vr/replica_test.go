@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"log/slog"
+	"maps"
 	"math/rand/v2"
+	"os"
 	"slices"
 	"testing"
 )
@@ -33,6 +36,36 @@ type Sim struct {
 
 	executed map[ReplicaNumber][]Payload
 	replies  []*ProcessReply
+
+	faults Faults
+
+	// invariant state
+	primaryOfView map[ViewNumber]ReplicaNumber
+	lastCommit    map[ReplicaNumber]CommitNumber
+	committed     []Payload             // the longest executed sequence seen
+	checkedExec   map[ReplicaNumber]int // executed entries already checked
+	seenOps       map[ReplicaNumber]map[string]bool
+}
+
+type Faults struct {
+	MaxDelay int     // ticks; 0 = deliver in the next tick
+	DropRate float64 // 0..1
+	DupRate  float64 // 0..1
+}
+
+func (f *Faults) delay(r *rand.Rand) int {
+	if f.MaxDelay == 0 {
+		return 0
+	}
+	return r.IntN(f.MaxDelay + 1)
+}
+
+func (f *Faults) shouldDrop(r *rand.Rand) bool {
+	return r.Float64() < f.DropRate
+}
+
+func (f *Faults) shouldDup(r *rand.Rand) bool {
+	return r.Float64() < f.DupRate
 }
 
 func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
@@ -44,6 +77,11 @@ func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
 		rand:     rand.New(rand.NewPCG(seed, 0)),
 		down:     map[ReplicaNumber]bool{},
 		executed: map[ReplicaNumber][]Payload{},
+
+		primaryOfView: map[ViewNumber]ReplicaNumber{},
+		lastCommit:    map[ReplicaNumber]CommitNumber{},
+		checkedExec:   map[ReplicaNumber]int{},
+		seenOps:       map[ReplicaNumber]map[string]bool{},
 	}
 
 	config := make([]ReplicaConfiguration, memberCount)
@@ -69,6 +107,11 @@ func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
 		}
 	})
 
+	return s
+}
+
+func (s *Sim) WithFaults(faults Faults) *Sim {
+	s.faults = faults
 	return s
 }
 
@@ -122,7 +165,7 @@ type Condition func() bool
 func (s *Sim) sendNextTick(from Correspondent, outgoing []Outgoing) {
 	for _, msg := range outgoing {
 		s.network = append(s.network, inFlight{
-			deliverAt: s.now + 1,
+			deliverAt: s.now + 1 + s.faults.delay(s.rand),
 			from:      from,
 			out:       msg,
 		})
@@ -131,7 +174,7 @@ func (s *Sim) sendNextTick(from Correspondent, outgoing []Outgoing) {
 
 func (s *Sim) Send(from, to Correspondent, req Request, deliveryAt int) {
 	s.network = append(s.network, inFlight{
-		deliverAt: deliveryAt,
+		deliverAt: deliveryAt + s.faults.delay(s.rand),
 		from:      from,
 		out: Outgoing{
 			To:  to,
@@ -160,19 +203,26 @@ func (s *Sim) deliver() {
 			if s.isDown(peer.state.ReplicaNumber) {
 				continue
 			}
+			if s.faults.shouldDrop(s.rand) {
+				continue
+			}
 
 			msgs := peer.Step(msg.toIncoming())
 
 			newInflights := make([]inFlight, len(msgs))
 			for j, outGoingMsg := range msgs {
 				newInflights[j] = inFlight{
-					deliverAt: s.now + 1,
+					deliverAt: s.now + 1 + s.faults.delay(s.rand),
 					from:      PeerCorrespondent(peer.state.GetConfiguration()),
 					out:       outGoingMsg,
 				}
 			}
 
 			newMsgs = append(newMsgs, newInflights...)
+			if s.faults.shouldDup(s.rand) {
+				newMsgs = append(newMsgs, msg)
+			}
+
 		} else {
 			s.replies = append(s.replies, msg.out.Req.(*ProcessReply))
 		}
@@ -196,6 +246,54 @@ func (s *Sim) tick() {
 		out := peer.Tick()
 		s.sendNextTick(PeerCorrespondent(peer.state.GetConfiguration()), out)
 	}
+
+	s.checkInvariants()
+}
+
+// checkInvariants fails the test if a safety property does not hold.
+func (s *Sim) checkInvariants() {
+	s.t.Helper()
+
+	for _, r := range s.replicas {
+		id := r.state.ReplicaNumber
+
+		// at most one primary in each view
+		if r.state.Role == RolePrimary && r.state.Status == StatusNormal {
+			if p, ok := s.primaryOfView[r.state.ViewNumber]; ok && p != id {
+				s.t.Fatalf("view %d has two primaries: %d and %d", r.state.ViewNumber, p, id)
+			}
+			s.primaryOfView[r.state.ViewNumber] = id
+		}
+
+		// the commit-number never decreases
+		if r.state.CommitNumber < s.lastCommit[id] {
+			s.t.Fatalf("replica %d commit went from %d to %d",
+				id, s.lastCommit[id], r.state.CommitNumber)
+		}
+		s.lastCommit[id] = r.state.CommitNumber
+
+		// all replicas execute the same sequence, and each op at most once
+		if s.seenOps[id] == nil {
+			s.seenOps[id] = map[string]bool{}
+		}
+		executed := s.executed[id]
+		for i := s.checkedExec[id]; i < len(executed); i++ {
+			op := executed[i]
+			if i < len(s.committed) {
+				if !bytes.Equal(op, s.committed[i]) {
+					s.t.Fatalf("replica %d executed %q as op %d, another replica executed %q",
+						id, op, i+1, s.committed[i])
+				}
+			} else {
+				s.committed = append(s.committed, op)
+			}
+			if s.seenOps[id][string(op)] {
+				s.t.Fatalf("replica %d executed %q twice", id, op)
+			}
+			s.seenOps[id][string(op)] = true
+		}
+		s.checkedExec[id] = len(executed)
+	}
 }
 
 func (s *Sim) RunUntil(condition Condition, maxTicks int) {
@@ -210,7 +308,7 @@ func (s *Sim) RunUntil(condition Condition, maxTicks int) {
 	}
 
 	if !condition() {
-		s.t.Fatal("condition not met")
+		s.t.Fatalf("condition not met after %d ticks", maxTicks)
 	}
 }
 
@@ -289,18 +387,11 @@ func (s *Sim) AllNodesOperational() bool {
 	return true
 }
 
-func (s *Sim) IsInViewChange() bool {
-	for _, peer := range s.getActivePeers() {
-		if peer.state.Status != StatusViewChange {
-			return false
-		}
-	}
-
-	return true
-}
-
 func (s *Sim) IsCommitted(clientId ClientId, requestNumber RequestNumber) bool {
 	primary := s.getPrimary()
+	if primary == nil {
+		return false
+	}
 	for logIndex, logEntry := range primary.state.Log {
 		if logEntry.ClientId == clientId && logEntry.RequestNumber == requestNumber {
 			opNumber := logIndex + 1
@@ -324,59 +415,250 @@ func (s *Sim) IsResponded(requestNumber RequestNumber) bool {
 	return false
 }
 
-func TestInitialViewChangeSim(t *testing.T) {
+func (s *Sim) RequestUntilCommitted(client ClientId, req RequestNumber, op Payload, maxTicks int) {
+	s.t.Helper()
+	s.RunUntil(func() bool {
+		primary := s.getPrimary()
+		if primary == nil {
+			return false
+		}
+		if s.IsCommitted(client, req) {
+			return true
+		}
+		if s.now%5 == 0 {
+			s.Send(ClientCorrespondent(client),
+				PeerCorrespondent(primary.state.GetConfiguration()),
+				&ProcessRequest{ClientId: client, RequestNumber: req, Operation: op},
+				s.now+1)
+		}
+		return false
+	}, maxTicks)
+}
+
+// AllCaughtUp is true when all replicas are normal in the same view, there is
+// one primary, and each replica has the full log of that view.
+func (s *Sim) AllCaughtUp() bool {
+	if !s.AllNodesOperational() {
+		return false
+	}
+	primary := s.getPrimary()
+	for _, r := range s.replicas {
+		if r.lastNormalView != r.state.ViewNumber ||
+			r.state.CommitNumber != primary.state.CommitNumber {
+			return false
+		}
+	}
+	return true
+}
+
+var defaultFaults = Faults{
+	MaxDelay: 2,
+	DropRate: 0.05,
+}
+
+const fuzzCorpusSeeds = 20
+
+// fuzzSim runs a scenario with faults. A normal `go test` runs the corpus
+// seeds; `go test -fuzz` searches for new seeds.
+func fuzzSim(f *testing.F, members int, faults Faults, scenario func(t *testing.T, s *Sim)) {
+	for seed := range uint64(fuzzCorpusSeeds) {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, seed uint64) {
+		scenario(t, NewSim(t, members, seed).WithFaults(faults))
+	})
+}
+
+// Initial view change
+
+func TestInitialViewChange(t *testing.T) {
 	s := NewSim(t, 3, 42)
 	s.RunUntil(s.IsOperational, 100)
+}
+
+func FuzzInitialViewChange(f *testing.F) {
+	fuzzSim(f, 3, defaultFaults, func(t *testing.T, s *Sim) {
+		s.RunUntil(s.IsOperational, 200)
+	})
+}
+
+// View change with one replica down
+
+func viewChangeScenario(t *testing.T, s *Sim, strict bool) {
+	s.RunUntil(s.IsOperational, 200)
+	oldPrimary := s.getPrimary()
+
+	s.pause(oldPrimary.state.ReplicaNumber)
+	s.RunUntil(func() bool {
+		p := s.getPrimary()
+		return s.IsOperational() && p != nil && p != oldPrimary
+	}, 200)
+	newPrimary := s.getPrimary()
+
+	s.resume(oldPrimary.state.ReplicaNumber)
+	s.RunUntil(s.AllCaughtUp, 200)
+
+	if strict && s.getPrimary() != newPrimary {
+		t.Fatal("old primary coming back caused a view change")
+	}
 }
 
 func TestViewChangeWithOneDown(t *testing.T) {
-	s := NewSim(t, 3, 42)
-	s.RunUntil(s.IsOperational, 100)
-
-	// stop primary
-	primary := s.getPrimary()
-	s.pause(primary.state.ReplicaNumber)
-
-	// remaining peers enter view change
-	s.RunUntil(s.IsInViewChange, 100)
-
-	// remaining peers can complete view change
-	s.RunUntil(s.IsOperational, 100)
-
-	newPrimary := s.getPrimary()
-	if newPrimary.state.ReplicaNumber == primary.state.ReplicaNumber {
-		t.Fatal("old primary is new primary")
-	}
-
-	// old primary comes back
-	s.resume(primary.state.ReplicaNumber)
-	s.RunUntil(s.AllNodesOperational, 100)
-
-	newNewPrimary := s.getPrimary()
-	if newPrimary.state.ReplicaNumber != newNewPrimary.state.ReplicaNumber {
-		t.Fatal("old primary coming back caused view change")
-	}
+	viewChangeScenario(t, NewSim(t, 3, 42), true)
 }
 
-func TestProcessSim(t *testing.T) {
-	s := NewSim(t, 3, 42)
-	s.RunUntil(s.IsOperational, 100)
+func FuzzViewChangeWithOneDown(f *testing.F) {
+	fuzzSim(f, 3, defaultFaults, func(t *testing.T, s *Sim) {
+		viewChangeScenario(t, s, false)
+	})
+}
+
+// Processing a request
+
+func processScenario(t *testing.T, s *Sim, strict bool) {
+	s.RunUntil(s.IsOperational, 200)
 
 	clientId := ClientId(555)
 	reqId := RequestNumber(123)
 	operation := []byte("lol")
-	primary := s.getPrimary()
-	s.Send(ClientCorrespondent(clientId), PeerCorrespondent(primary.state.GetConfiguration()),
-		&ProcessRequest{
-			RequestNumber: reqId,
-			ClientId:      clientId,
-			Operation:     operation,
-		}, s.now+1)
 
-	s.RunUntil(func() bool { return s.IsCommitted(clientId, reqId) }, 100)
-	if !bytes.Equal(s.executed[primary.state.ReplicaNumber][0], operation) {
-		t.Error("wrong payload")
+	if strict {
+		// without faults, one request is enough
+		primary := s.getPrimary()
+		s.Send(ClientCorrespondent(clientId), PeerCorrespondent(primary.state.GetConfiguration()),
+			&ProcessRequest{RequestNumber: reqId, ClientId: clientId, Operation: operation},
+			s.now+1)
+		s.RunUntil(func() bool { return s.IsCommitted(clientId, reqId) }, 100)
+	} else {
+		s.RequestUntilCommitted(clientId, reqId, operation, 300)
+	}
+
+	primary := s.getPrimary()
+	executed := s.executed[primary.state.ReplicaNumber]
+	if len(executed) != 1 || !bytes.Equal(executed[0], operation) {
+		t.Errorf("primary executed %q, want [%q]", executed, operation)
 	}
 
 	s.RunUntil(func() bool { return s.IsResponded(reqId) }, 100)
+	if strict && len(s.replies) != 1 {
+		t.Errorf("client got %d replies, want 1", len(s.replies))
+	}
+}
+
+func TestProcess(t *testing.T) {
+	processScenario(t, NewSim(t, 3, 42), true)
+}
+
+func FuzzProcess(f *testing.F) {
+	fuzzSim(f, 3, defaultFaults, func(t *testing.T, s *Sim) {
+		processScenario(t, s, false)
+	})
+}
+
+// Random workload: requests, pauses and resumes in a random order
+
+// randomWorkload runs requests, pauses and resumes in a random order, and
+// returns the last request number that it used.
+func randomWorkload(s *Sim, clientId ClientId, ticks int) RequestNumber {
+	req := RequestNumber(0)
+	maxPaused := len(s.replicas) / 2 // f
+
+	for range ticks {
+		switch n := s.rand.IntN(100); {
+		case n < 10:
+			if p := s.getPrimary(); p != nil {
+				req++
+				s.Send(ClientCorrespondent(clientId), PeerCorrespondent(p.state.GetConfiguration()),
+					&ProcessRequest{ClientId: clientId, RequestNumber: req,
+						Operation: fmt.Append(nil, req)},
+					s.now+1)
+			}
+		case n < 12:
+			if len(s.down) < maxPaused {
+				s.pause(ReplicaNumber(s.rand.IntN(len(s.replicas))))
+			}
+		case n < 14:
+			// sorted, so that the seed alone selects the replica
+			if paused := slices.Sorted(maps.Keys(s.down)); len(paused) > 0 {
+				s.resume(paused[0])
+			}
+		}
+		s.tick()
+	}
+
+	return req
+}
+
+// randomScenario runs a random workload, then heals the cluster. The cluster
+// must recover and accept a new request.
+func randomScenario(t *testing.T, s *Sim) {
+	clientId := ClientId(1)
+	req := randomWorkload(s, clientId, 1000)
+
+	for _, r := range s.replicas {
+		s.resume(r.state.ReplicaNumber)
+	}
+	s.RunUntil(s.AllCaughtUp, 500)
+	req++
+	s.RequestUntilCommitted(clientId, req, fmt.Append(nil, req), 500)
+}
+
+func FuzzRandom(f *testing.F) {
+	fuzzSim(f, 3, defaultFaults, randomScenario)
+}
+
+// Duplicated messages arrive late and out of order, so they test the view
+// checks and the handling of old messages.
+func FuzzRandomWithDuplicates(f *testing.F) {
+	fuzzSim(f, 3, Faults{MaxDelay: 2, DropRate: 0.05, DupRate: 0.05}, randomScenario)
+}
+
+// simTrace sends groups of requests, so that several ops are in flight at
+// the same time, and records the state of each replica after each tick.
+func simTrace(t *testing.T, seed uint64) []string {
+	s := NewSim(t, 3, seed).WithFaults(defaultFaults)
+	s.RunUntil(s.IsOperational, 200)
+
+	req := RequestNumber(0)
+	trace := []string{}
+	for tick := range 300 {
+		if p := s.getPrimary(); p != nil && tick%10 == 0 {
+			for range 5 {
+				req++
+				s.Send(ClientCorrespondent(1), PeerCorrespondent(p.state.GetConfiguration()),
+					&ProcessRequest{ClientId: 1, RequestNumber: req,
+						Operation: fmt.Append(nil, req)},
+					s.now+1)
+			}
+		}
+		s.tick()
+
+		line := ""
+		for _, r := range s.replicas {
+			line += fmt.Sprintf("r%d v%d s%d op%d c%d; ", r.state.ReplicaNumber,
+				r.state.ViewNumber, r.state.Status, r.state.OpNumber, r.state.CommitNumber)
+		}
+		trace = append(trace, line+fmt.Sprint(len(s.network)))
+	}
+	return trace
+}
+
+// A seed must repeat the same run. Otherwise a seed that the fuzzer saves
+// does not reproduce its failure. A common cause is a range over a map that
+// sends messages: Go chooses a random order for each such loop.
+func TestSimIsDeterministic(t *testing.T) {
+	for seed := range uint64(50) {
+		first, second := simTrace(t, seed), simTrace(t, seed)
+		for tick := range first {
+			if first[tick] != second[tick] {
+				t.Fatalf("seed %d differs at tick %d:\n  run 1: %s\n  run 2: %s",
+					seed, tick+1, first[tick], second[tick])
+			}
+		}
+	}
+}
+
+func TestMain(m *testing.M) {
+	slog.SetDefault(slog.New(slog.DiscardHandler))
+	os.Exit(m.Run())
 }

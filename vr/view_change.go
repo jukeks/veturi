@@ -48,7 +48,7 @@ func (vc *ViewChange) longestLogAndHighestCommit() (*DoViewChange, CommitNumber)
 		}
 	}
 	highestCommit := dosFromLastView[0]
-	for _, do := range dosFromLastView {
+	for _, do := range dos {
 		if do.CommitNumber > highestCommit.CommitNumber {
 			highestCommit = do
 		}
