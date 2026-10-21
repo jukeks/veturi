@@ -52,8 +52,8 @@ func (r *Replica) handleNewState(req *NewState) {
 	}
 
 	r.stateRequested = false
-	r.ticksSinceRequest = 0
-	r.ticksWithGap = 0
+	r.ticksSinceStateRequest = 0
+	r.ticksWithPrepareOKGap = 0
 
 	r.commitUpTo(req.CommitNumber)
 	r.lastNormalView = r.state.ViewNumber
@@ -79,9 +79,9 @@ func (r *Replica) handleNewState(req *NewState) {
 const StateRequestTimeout = 10
 
 func (r *Replica) requestState() {
-	if r.stateRequested && r.ticksSinceRequest > StateRequestTimeout {
+	if r.stateRequested && r.ticksSinceStateRequest > StateRequestTimeout {
 		r.stateRequested = false
-		r.ticksSinceRequest = 0
+		r.ticksSinceStateRequest = 0
 	}
 	if r.stateRequested {
 		return

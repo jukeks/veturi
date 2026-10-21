@@ -26,7 +26,7 @@ type (
 	ReplicaNumber uint64
 	ClientId      uint64
 	CommitNumber  uint64
-	Nonce         []byte
+	Nonce         uint64
 	Log           []*ClientRequest
 )
 
@@ -100,6 +100,7 @@ type RecoveryResponse struct {
 	OpNumber     OpNumber
 	CommitNumber CommitNumber
 	From         ReplicaNumber
+	IsPrimary    bool
 }
 
 func (*Prepare) message()          {}

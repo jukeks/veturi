@@ -26,6 +26,7 @@ type Sim struct {
 	down     map[ReplicaNumber]bool
 	network  []inFlight
 
+	members  []ReplicaNumber
 	executed map[ReplicaNumber][]Payload
 	replies  []*ClientReply
 
@@ -76,18 +77,12 @@ func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
 		seenOps:       map[ReplicaNumber]map[string]bool{},
 	}
 
-	members := make([]ReplicaNumber, memberCount)
 	for i := range memberCount {
-		members[i] = ReplicaNumber(i)
+		s.members = append(s.members, ReplicaNumber(i))
 	}
 
-	for i := range memberCount {
-		id := ReplicaNumber(i)
-		upCall := func(op Payload) Payload {
-			s.executed[id] = append(s.executed[id], op)
-			return op
-		}
-		s.replicas = append(s.replicas, NewReplica(id, members, upCall, seed+1))
+	for _, id := range s.members {
+		s.replicas = append(s.replicas, NewReplica(id, s.members, s.upCallFor(id), seed+1, false))
 	}
 
 	t.Cleanup(func() {
@@ -97,6 +92,14 @@ func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
 	})
 
 	return s
+}
+
+// upCallFor records the operations that a replica executes.
+func (s *Sim) upCallFor(id ReplicaNumber) UpCall {
+	return func(op Payload) Payload {
+		s.executed[id] = append(s.executed[id], op)
+		return op
+	}
 }
 
 func (s *Sim) WithFaults(faults Faults) *Sim {
@@ -143,6 +146,30 @@ func (s *Sim) pause(id ReplicaNumber) {
 
 func (s *Sim) resume(id ReplicaNumber) {
 	delete(s.down, id)
+}
+
+// crash stops a replica. Unlike pause, its state is lost: the only way back
+// is restart, which starts it with an empty state.
+func (s *Sim) crash(id ReplicaNumber) {
+	s.pause(id)
+}
+
+// restart replaces a crashed replica with a new one that has the same
+// number, an empty state and a new seed, and that starts in recovery.
+func (s *Sim) restart(id ReplicaNumber) {
+	s.t.Helper()
+	if !s.isDown(id) {
+		s.t.Fatalf("restart of replica %d, which did not crash", id)
+	}
+
+	// the new replica executes the ops again from the start
+	s.executed[id] = nil
+	s.checkedExec[id] = 0
+	s.seenOps[id] = nil
+	s.lastCommit[id] = 0
+
+	s.replicas[id] = NewReplica(id, s.members, s.upCallFor(id), s.rand.Uint64(), true)
+	s.resume(id)
 }
 
 func (s *Sim) isDown(id ReplicaNumber) bool {

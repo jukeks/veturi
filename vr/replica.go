@@ -118,37 +118,47 @@ type Replica struct {
 	inflight      map[OpNumber]ReplyState
 	upCall        UpCall
 
-	ticksSincePrimary int
-	timeoutTicks      int
+	ticksSincePrimaryComms int
+	primaryTimeoutTicks    int
 
 	lastNormalView ViewNumber
 	viewChanges    map[ViewNumber]*ViewChange
 
 	rand *rand.Rand
 
-	stateRequested    bool
-	ticksSinceRequest int
+	stateRequested         bool
+	ticksSinceStateRequest int
 
-	ticksWithGap int
+	ticksWithPrepareOKGap int
+
+	recoveryResponses           map[ReplicaNumber]*RecoveryResponse
+	startingInRecover           bool
+	ticksSinceRecoveryRequested int
+	recoveryNonce               Nonce
 }
 
 func NewReplica(id ReplicaNumber, clusterMembers []ReplicaNumber,
-	upCall UpCall, seed uint64) *Replica {
+	upCall UpCall, seed uint64, recover bool) *Replica {
 	state := DefaultReplicaState()
 	state.ReplicaNumber = id
 	state.ClusterMembers = clusterMembers
+	if recover {
+		state.Status = StatusRecovering
+	}
 
 	r := Replica{
-		state:         state,
-		incoming:      make(chan Message, 100),
-		outgoing:      make(chan Outgoing, 100),
-		stop:          make(chan bool, 1),
-		stopped:       make(chan bool, 1),
-		earlyPrepares: map[OpNumber]*Prepare{},
-		inflight:      map[OpNumber]ReplyState{},
-		upCall:        upCall,
-		viewChanges:   map[ViewNumber]*ViewChange{},
-		rand:          rand.New(rand.NewPCG(seed, uint64(id))),
+		state:             state,
+		incoming:          make(chan Message, 100),
+		outgoing:          make(chan Outgoing, 100),
+		stop:              make(chan bool, 1),
+		stopped:           make(chan bool, 1),
+		earlyPrepares:     map[OpNumber]*Prepare{},
+		inflight:          map[OpNumber]ReplyState{},
+		upCall:            upCall,
+		viewChanges:       map[ViewNumber]*ViewChange{},
+		rand:              rand.New(rand.NewPCG(seed, uint64(id))),
+		recoveryResponses: map[ReplicaNumber]*RecoveryResponse{},
+		startingInRecover: recover,
 	}
 
 	r.resetTimer()
@@ -221,6 +231,16 @@ func (r *Replica) handleMessage(msg Message) {
 	slog.Info("handleMessage", "replica", r.state.ReplicaNumber,
 		"type", fmt.Sprintf("%T", msg), "msg", msg)
 
+	if r.state.Status == StatusRecovering {
+		switch msg.(type) {
+		case *RecoveryResponse:
+			break
+		default:
+			slog.Info("recovering, dropping requests")
+			return
+		}
+	}
+
 	switch msg := msg.(type) {
 	case *ClientRequest:
 		r.handleProcessRequest(msg)
@@ -240,6 +260,10 @@ func (r *Replica) handleMessage(msg Message) {
 		r.handleGetState(msg)
 	case *NewState:
 		r.handleNewState(msg)
+	case *Recovery:
+		r.handleRecovery(msg)
+	case *RecoveryResponse:
+		r.handleRecoveryResponse(msg)
 	default:
 		slog.Error("received message that is not recognized", "msg", msg)
 	}
@@ -271,10 +295,24 @@ func (r *Replica) send(msgs []Outgoing) {
 	}
 }
 
+const RecoveryTimeout = 10
 const EarlyPrepareTimeout = 5
 const PrepareOkTimeout = 3
 
 func (r *Replica) handleTick() {
+	if r.startingInRecover {
+		r.startingInRecover = false
+		r.startRecovery()
+		return
+	}
+	if r.state.Status == StatusRecovering {
+		r.ticksSinceRecoveryRequested++
+		if r.ticksSinceRecoveryRequested > RecoveryTimeout {
+			r.requestRecovery()
+		}
+		return
+	}
+
 	if r.state.Role == RolePrimary {
 		for _, peer := range r.peers() {
 			r.sendPeer(peer, &Commit{
@@ -308,24 +346,24 @@ func (r *Replica) handleTick() {
 			r.inflight[op] = replyState
 		}
 	} else {
-		r.ticksSincePrimary++
-		if r.ticksSincePrimary >= r.timeoutTicks {
+		r.ticksSincePrimaryComms++
+		if r.ticksSincePrimaryComms >= r.primaryTimeoutTicks {
 			r.initiateViewChange()
 		}
 
 		if len(r.earlyPrepares) == 0 {
-			r.ticksWithGap = 0
+			r.ticksWithPrepareOKGap = 0
 		} else {
-			r.ticksWithGap++
-			if r.ticksWithGap >= EarlyPrepareTimeout {
+			r.ticksWithPrepareOKGap++
+			if r.ticksWithPrepareOKGap >= EarlyPrepareTimeout {
 				r.requestState()
 			}
 		}
 	}
 
 	if r.stateRequested {
-		r.ticksSinceRequest++
-		if r.ticksSinceRequest > StateRequestTimeout {
+		r.ticksSinceStateRequest++
+		if r.ticksSinceStateRequest > StateRequestTimeout {
 			r.requestState()
 		}
 	}
@@ -352,6 +390,6 @@ func (r *Replica) commitUpTo(commit CommitNumber) {
 }
 
 func (r *Replica) resetTimer() {
-	r.ticksSincePrimary = 0
-	r.timeoutTicks = PrimaryTimeoutTicks + r.rand.IntN(PrimaryTimeoutTicks) // jitter
+	r.ticksSincePrimaryComms = 0
+	r.primaryTimeoutTicks = PrimaryTimeoutTicks + r.rand.IntN(PrimaryTimeoutTicks) // jitter
 }

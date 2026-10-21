@@ -75,7 +75,7 @@ func (r *Replica) resetViewState(v ViewNumber) {
 	r.state.Role = RoleBackup
 	r.resetTimer()
 	r.stateRequested = false
-	r.ticksSinceRequest = 0
+	r.ticksSinceStateRequest = 0
 
 	clear(r.inflight)
 	clear(r.earlyPrepares)
