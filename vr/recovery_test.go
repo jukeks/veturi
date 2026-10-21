@@ -156,16 +156,20 @@ func randomCrashWorkload(s *Sim, clientId ClientId, ticks int) RequestNumber {
 	return req
 }
 
-func FuzzRandomCrash(f *testing.F) {
-	fuzzSim(f, 3, defaultFaults, func(t *testing.T, s *Sim) {
-		clientId := ClientId(1)
-		req := randomCrashWorkload(s, clientId, 1000)
+// randomCrashScenario runs a random crash workload, then restarts all crashed
+// replicas. The cluster must recover and accept a new request.
+func randomCrashScenario(t *testing.T, s *Sim) {
+	clientId := ClientId(1)
+	req := randomCrashWorkload(s, clientId, 1000)
 
-		for _, id := range slices.Sorted(maps.Keys(s.down)) {
-			s.restart(id)
-		}
-		s.RunUntil(s.AllCaughtUp, 1000)
-		req++
-		s.RequestUntilCommitted(clientId, req, fmt.Append(nil, req), 500)
-	})
+	for _, id := range slices.Sorted(maps.Keys(s.down)) {
+		s.restart(id)
+	}
+	s.RunUntil(s.AllCaughtUp, 1000)
+	req++
+	s.RequestUntilCommitted(clientId, req, fmt.Append(nil, req), 500)
+}
+
+func FuzzRandomCrash(f *testing.F) {
+	fuzzSim(f, 3, defaultFaults, randomCrashScenario)
 }
