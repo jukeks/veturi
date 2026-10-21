@@ -91,12 +91,12 @@ func (r *Replica) startViewChange(v ViewNumber) {
 	r.resetViewState(v)
 	r.state.Status = StatusViewChange
 	for _, peer := range r.peers() {
-		r.sendPeer(peer, &StartViewChange{ViewNumber: v, ReplicaNumber: r.state.ReplicaNumber})
+		r.sendPeer(peer, &StartViewChange{ViewNumber: v, From: r.state.ReplicaNumber})
 	}
 }
 
 func (r *Replica) startNormal(v ViewNumber, role ReplicaRole,
-	log []*ProcessRequest, op OpNumber, commit CommitNumber) {
+	log []*ClientRequest, op OpNumber, commit CommitNumber) {
 	r.resetViewState(v)
 	r.state.Status = StatusNormal
 	r.state.Role = role
@@ -113,7 +113,7 @@ func (r *Replica) startNormal(v ViewNumber, role ReplicaRole,
 			}
 		} else {
 			r.sendPeer(r.getPrimaryForView(v),
-				&PrepareOK{ViewNumber: v, OpNumber: n, BackupId: r.state.ReplicaNumber})
+				&PrepareOK{ViewNumber: v, OpNumber: n, From: r.state.ReplicaNumber})
 		}
 	}
 }
@@ -130,11 +130,11 @@ func (r *Replica) initiateViewChange() {
 	r.startViewChange(r.state.ViewNumber + 1)
 }
 
-func (r *Replica) getPrimaryForView(view ViewNumber) ReplicaConfiguration {
+func (r *Replica) getPrimaryForView(view ViewNumber) ReplicaNumber {
 	return r.state.ClusterMembers[int(view)%len(r.state.ClusterMembers)]
 }
 
-func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartViewChange) {
+func (r *Replica) handleStartViewChange(req *StartViewChange) {
 	if req.ViewNumber < r.state.ViewNumber {
 		// older view change
 		return
@@ -145,7 +145,7 @@ func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartVie
 		viewChange = NewViewChange()
 		r.viewChanges[req.ViewNumber] = viewChange
 	}
-	viewChange.StartViewChanges[from.ID] = req
+	viewChange.StartViewChanges[req.From] = req
 
 	if req.ViewNumber > r.state.ViewNumber {
 		r.startViewChange(req.ViewNumber)
@@ -157,16 +157,16 @@ func (r *Replica) handleStartViewChange(from ReplicaConfiguration, req *StartVie
 
 	viewPrimary := r.getPrimaryForView(req.ViewNumber)
 	r.sendPeer(viewPrimary, &DoViewChange{
-		ViewNumber:    r.state.ViewNumber,
-		Log:           slices.Clone(r.state.Log),
-		LastView:      r.lastNormalView,
-		OpNumber:      r.state.OpNumber,
-		CommitNumber:  r.state.CommitNumber,
-		ReplicaNumber: r.state.ReplicaNumber,
+		ViewNumber:   r.state.ViewNumber,
+		Log:          slices.Clone(r.state.Log),
+		LastView:     r.lastNormalView,
+		OpNumber:     r.state.OpNumber,
+		CommitNumber: r.state.CommitNumber,
+		From:         r.state.ReplicaNumber,
 	})
 }
 
-func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChange) {
+func (r *Replica) handleDoViewChange(req *DoViewChange) {
 	if req.ViewNumber > r.state.ViewNumber {
 		r.startViewChange(req.ViewNumber)
 	}
@@ -179,7 +179,7 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 		return
 	}
 
-	if r.getPrimaryForView(r.state.ViewNumber).ID != r.state.ReplicaNumber {
+	if r.getPrimaryForView(r.state.ViewNumber) != r.state.ReplicaNumber {
 		slog.Error("got do-view-change for view i can't be primary for")
 		return
 	}
@@ -190,7 +190,7 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 		r.viewChanges[req.ViewNumber] = viewChange
 	}
 
-	viewChange.DoViewChanges[req.ReplicaNumber] = req
+	viewChange.DoViewChanges[req.From] = req
 	if !viewChange.hasQuorum(r.quorum()) {
 		return
 	}
@@ -210,7 +210,7 @@ func (r *Replica) handleDoViewChange(from ReplicaConfiguration, req *DoViewChang
 	}
 }
 
-func (r *Replica) handleStartView(_ ReplicaConfiguration, req *StartView) {
+func (r *Replica) handleStartView(req *StartView) {
 	if req.ViewNumber < r.state.ViewNumber ||
 		(req.ViewNumber == r.state.ViewNumber && r.state.Status == StatusNormal) {
 		return

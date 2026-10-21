@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-func (r *Replica) handleGetState(from ReplicaConfiguration, req *GetState) {
+func (r *Replica) handleGetState(req *GetState) {
 	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
@@ -21,7 +21,7 @@ func (r *Replica) handleGetState(from ReplicaConfiguration, req *GetState) {
 		return
 	}
 
-	r.sendPeer(from, &NewState{
+	r.sendPeer(req.From, &NewState{
 		ViewNumber:   r.state.ViewNumber,
 		Log:          slices.Clone(r.state.Log[req.OpNumber:]),
 		OpNumber:     r.state.OpNumber,
@@ -29,7 +29,7 @@ func (r *Replica) handleGetState(from ReplicaConfiguration, req *GetState) {
 	})
 }
 
-func (r *Replica) handleNewState(from ReplicaConfiguration, req *NewState) {
+func (r *Replica) handleNewState(req *NewState) {
 	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
@@ -72,7 +72,7 @@ func (r *Replica) handleNewState(from ReplicaConfiguration, req *NewState) {
 	r.sendPeer(r.getPrimaryForView(r.state.ViewNumber), &PrepareOK{
 		ViewNumber: r.state.ViewNumber,
 		OpNumber:   r.state.OpNumber,
-		BackupId:   r.state.ReplicaNumber,
+		From:       r.state.ReplicaNumber,
 	})
 }
 
@@ -92,6 +92,6 @@ func (r *Replica) requestState() {
 	r.sendPeer(r.getPrimaryForView(r.state.ViewNumber), &GetState{
 		ViewNumber: r.state.ViewNumber,
 		OpNumber:   r.state.OpNumber,
-		BackupId:   r.state.ReplicaNumber,
+		From:       r.state.ReplicaNumber,
 	})
 }

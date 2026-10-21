@@ -4,8 +4,8 @@ import (
 	"testing"
 )
 
-func NewTestReplica(id ReplicaNumber, role ReplicaRole, configs []ReplicaConfiguration) *Replica {
-	r := NewReplica(id, configs, func(_ Payload) Payload { return nil }, 42)
+func NewTestReplica(id ReplicaNumber, role ReplicaRole, members []ReplicaNumber) *Replica {
+	r := NewReplica(id, members, func(_ Payload) Payload { return nil }, 42)
 	r.state.Role = role
 	r.state.Status = StatusNormal
 
@@ -13,38 +13,27 @@ func NewTestReplica(id ReplicaNumber, role ReplicaRole, configs []ReplicaConfigu
 }
 
 func TestGapsInPrepareOK(t *testing.T) {
-	configs := []ReplicaConfiguration{
-		{ID: 1, Hostname: "1"},
-		{ID: 2, Hostname: "2"},
-	}
-	primary := NewTestReplica(0, RolePrimary, configs)
-	backup := NewTestReplica(1, RoleBackup, configs)
+	backup := NewTestReplica(1, RoleBackup, testMembers())
 
-	req1 := Incoming{
-		From: PeerCorrespondent(primary.state.GetConfiguration()),
-		Req: &Prepare{
-			ViewNumber: 0,
-			Operation: ProcessRequest{
-				RequestNumber: 1,
-				ClientId:      555,
-				Operation:     []byte("req1"),
-			},
-			OpNumber:     1,
-			CommitNumber: 0,
+	req1 := &Prepare{
+		ViewNumber: 0,
+		Operation: ClientRequest{
+			RequestNumber: 1,
+			From:          555,
+			Operation:     []byte("req1"),
 		},
+		OpNumber:     1,
+		CommitNumber: 0,
 	}
-	req2 := Incoming{
-		From: PeerCorrespondent(primary.state.GetConfiguration()),
-		Req: &Prepare{
-			ViewNumber: 0,
-			Operation: ProcessRequest{
-				RequestNumber: 1,
-				ClientId:      555,
-				Operation:     []byte("req2"),
-			},
-			OpNumber:     2,
-			CommitNumber: 0,
+	req2 := &Prepare{
+		ViewNumber: 0,
+		Operation: ClientRequest{
+			RequestNumber: 1,
+			From:          555,
+			Operation:     []byte("req2"),
 		},
+		OpNumber:     2,
+		CommitNumber: 0,
 	}
 
 	afterReq2 := backup.Step(req2)
@@ -57,9 +46,9 @@ func TestGapsInPrepareOK(t *testing.T) {
 		t.Errorf("afterReq1 had len %d", len(afterReq1))
 	}
 	resp := afterReq1[0]
-	prepareOk, ok := resp.Req.(*PrepareOK)
+	prepareOk, ok := resp.Msg.(*PrepareOK)
 	if !ok {
-		t.Errorf("req was not PrepareOK: %v", resp.Req)
+		t.Errorf("req was not PrepareOK: %v", resp.Msg)
 	}
 
 	if prepareOk.OpNumber != 2 {

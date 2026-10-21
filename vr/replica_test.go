@@ -14,15 +14,7 @@ import (
 
 type inFlight struct {
 	deliverAt int
-	from      Correspondent
 	out       Outgoing
-}
-
-func (i *inFlight) toIncoming() Incoming {
-	return Incoming{
-		From: i.from,
-		Req:  i.out.Req,
-	}
 }
 
 type Sim struct {
@@ -35,7 +27,7 @@ type Sim struct {
 	network  []inFlight
 
 	executed map[ReplicaNumber][]Payload
-	replies  []*ProcessReply
+	replies  []*ClientReply
 
 	faults Faults
 
@@ -84,12 +76,9 @@ func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
 		seenOps:       map[ReplicaNumber]map[string]bool{},
 	}
 
-	config := make([]ReplicaConfiguration, memberCount)
+	members := make([]ReplicaNumber, memberCount)
 	for i := range memberCount {
-		config[i] = ReplicaConfiguration{
-			ID:       ReplicaNumber(i),
-			Hostname: fmt.Sprintf("%d", i),
-		}
+		members[i] = ReplicaNumber(i)
 	}
 
 	for i := range memberCount {
@@ -98,7 +87,7 @@ func NewSim(t *testing.T, memberCount int, seed uint64) *Sim {
 			s.executed[id] = append(s.executed[id], op)
 			return op
 		}
-		s.replicas = append(s.replicas, NewReplica(id, config, upCall, seed+1))
+		s.replicas = append(s.replicas, NewReplica(id, members, upCall, seed+1))
 	}
 
 	t.Cleanup(func() {
@@ -162,23 +151,23 @@ func (s *Sim) isDown(id ReplicaNumber) bool {
 
 type Condition func() bool
 
-func (s *Sim) sendNextTick(from Correspondent, outgoing []Outgoing) {
+func (s *Sim) sendNextTick(outgoing []Outgoing) {
 	for _, msg := range outgoing {
 		s.network = append(s.network, inFlight{
 			deliverAt: s.now + 1 + s.faults.delay(s.rand),
-			from:      from,
 			out:       msg,
 		})
 	}
 }
 
-func (s *Sim) Send(from, to Correspondent, req Request, deliveryAt int) {
+// Send puts a message from outside the cluster, for example from a client,
+// into the network.
+func (s *Sim) Send(to ReplicaNumber, msg Message, deliveryAt int) {
 	s.network = append(s.network, inFlight{
 		deliverAt: deliveryAt + s.faults.delay(s.rand),
-		from:      from,
 		out: Outgoing{
-			To:  to,
-			Req: req,
+			To:  PeerCorrespondent(to),
+			Msg: msg,
 		},
 	})
 }
@@ -199,7 +188,7 @@ func (s *Sim) deliver() {
 		}
 
 		if msg.out.To.Type == CorrespondentPeer {
-			peer := s.getPeer(msg.out.To.Peer.ID)
+			peer := s.getPeer(msg.out.To.Peer)
 			if s.isDown(peer.state.ReplicaNumber) {
 				continue
 			}
@@ -207,13 +196,12 @@ func (s *Sim) deliver() {
 				continue
 			}
 
-			msgs := peer.Step(msg.toIncoming())
+			msgs := peer.Step(msg.out.Msg)
 
 			newInflights := make([]inFlight, len(msgs))
 			for j, outGoingMsg := range msgs {
 				newInflights[j] = inFlight{
 					deliverAt: s.now + 1 + s.faults.delay(s.rand),
-					from:      PeerCorrespondent(peer.state.GetConfiguration()),
 					out:       outGoingMsg,
 				}
 			}
@@ -224,7 +212,7 @@ func (s *Sim) deliver() {
 			}
 
 		} else {
-			s.replies = append(s.replies, msg.out.Req.(*ProcessReply))
+			s.replies = append(s.replies, msg.out.Msg.(*ClientReply))
 		}
 	}
 
@@ -244,7 +232,7 @@ func (s *Sim) tick() {
 		}
 
 		out := peer.Tick()
-		s.sendNextTick(PeerCorrespondent(peer.state.GetConfiguration()), out)
+		s.sendNextTick(out)
 	}
 
 	s.checkInvariants()
@@ -393,7 +381,7 @@ func (s *Sim) IsCommitted(clientId ClientId, requestNumber RequestNumber) bool {
 		return false
 	}
 	for logIndex, logEntry := range primary.state.Log {
-		if logEntry.ClientId == clientId && logEntry.RequestNumber == requestNumber {
+		if logEntry.From == clientId && logEntry.RequestNumber == requestNumber {
 			opNumber := logIndex + 1
 			if primary.state.CommitNumber >= CommitNumber(opNumber) {
 				return true
@@ -426,9 +414,8 @@ func (s *Sim) RequestUntilCommitted(client ClientId, req RequestNumber, op Paylo
 			return true
 		}
 		if s.now%5 == 0 {
-			s.Send(ClientCorrespondent(client),
-				PeerCorrespondent(primary.state.GetConfiguration()),
-				&ProcessRequest{ClientId: client, RequestNumber: req, Operation: op},
+			s.Send(primary.state.ReplicaNumber,
+				&ClientRequest{From: client, RequestNumber: req, Operation: op},
 				s.now+1)
 		}
 		return false
@@ -525,8 +512,8 @@ func processScenario(t *testing.T, s *Sim, strict bool) {
 	if strict {
 		// without faults, one request is enough
 		primary := s.getPrimary()
-		s.Send(ClientCorrespondent(clientId), PeerCorrespondent(primary.state.GetConfiguration()),
-			&ProcessRequest{RequestNumber: reqId, ClientId: clientId, Operation: operation},
+		s.Send(primary.state.ReplicaNumber,
+			&ClientRequest{RequestNumber: reqId, From: clientId, Operation: operation},
 			s.now+1)
 		s.RunUntil(func() bool { return s.IsCommitted(clientId, reqId) }, 100)
 	} else {
@@ -568,8 +555,8 @@ func randomWorkload(s *Sim, clientId ClientId, ticks int) RequestNumber {
 		case n < 10:
 			if p := s.getPrimary(); p != nil {
 				req++
-				s.Send(ClientCorrespondent(clientId), PeerCorrespondent(p.state.GetConfiguration()),
-					&ProcessRequest{ClientId: clientId, RequestNumber: req,
+				s.Send(p.state.ReplicaNumber,
+					&ClientRequest{From: clientId, RequestNumber: req,
 						Operation: fmt.Append(nil, req)},
 					s.now+1)
 			}
@@ -625,8 +612,8 @@ func simTrace(t *testing.T, seed uint64) []string {
 		if p := s.getPrimary(); p != nil && tick%10 == 0 {
 			for range 5 {
 				req++
-				s.Send(ClientCorrespondent(1), PeerCorrespondent(p.state.GetConfiguration()),
-					&ProcessRequest{ClientId: 1, RequestNumber: req,
+				s.Send(p.state.ReplicaNumber,
+					&ClientRequest{From: 1, RequestNumber: req,
 						Operation: fmt.Append(nil, req)},
 					s.now+1)
 			}

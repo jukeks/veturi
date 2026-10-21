@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
+func (r *Replica) handleProcessRequest(req *ClientRequest) {
 	if r.state.Status != StatusNormal {
 		slog.Info("Can't process requests")
 		return
@@ -16,10 +16,10 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 		return
 	}
 
-	lastClientState, ok := r.state.ClientTable[req.ClientId]
+	lastClientState, ok := r.state.ClientTable[req.From]
 	if ok {
 		if lastClientState.LatestRequestNumber == req.RequestNumber {
-			r.sendClient(from, &ProcessReply{
+			r.sendClient(req.From, &ClientReply{
 				ViewNumber:    r.state.ViewNumber,
 				RequestNumber: lastClientState.LatestRequestNumber,
 				Reply:         lastClientState.LatestResult,
@@ -35,7 +35,7 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 
 	for op := OpNumber(r.state.CommitNumber + 1); op <= r.state.OpNumber; op++ {
 		logEntry := r.state.Log[op-1]
-		if logEntry.ClientId == req.ClientId && logEntry.RequestNumber == req.RequestNumber {
+		if logEntry.From == req.From && logEntry.RequestNumber == req.RequestNumber {
 			slog.Info("dropping already processing request")
 			return
 		}
@@ -58,7 +58,7 @@ func (r *Replica) handleProcessRequest(req *ProcessRequest, from ClientId) {
 	}
 }
 
-func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
+func (r *Replica) handlePrepare(req *Prepare) {
 	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
@@ -75,10 +75,10 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 
 	if req.OpNumber <= r.state.OpNumber {
 		slog.Info("prepare: reprocessing", "req", req.OpNumber, "me", r.state.OpNumber)
-		r.sendPeer(from, &PrepareOK{
+		r.sendPeer(r.getPrimaryForView(r.state.ViewNumber), &PrepareOK{
 			ViewNumber: r.state.ViewNumber,
 			OpNumber:   req.OpNumber,
-			BackupId:   r.state.ReplicaNumber,
+			From:       r.state.ReplicaNumber,
 		})
 		return
 	}
@@ -95,10 +95,10 @@ func (r *Replica) handlePrepare(from ReplicaConfiguration, req *Prepare) {
 	r.handleEarlyPrepares()
 	r.backupCommit(req.CommitNumber)
 
-	r.sendPeer(from, &PrepareOK{
+	r.sendPeer(r.getPrimaryForView(r.state.ViewNumber), &PrepareOK{
 		ViewNumber: r.state.ViewNumber,
 		OpNumber:   r.state.OpNumber,
-		BackupId:   r.state.ReplicaNumber,
+		From:       r.state.ReplicaNumber,
 	})
 }
 
@@ -153,7 +153,7 @@ func (r *Replica) updateOKUpTo(lastOp OpNumber, peer ReplicaNumber) {
 	}
 }
 
-func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
+func (r *Replica) handlePrepareOK(req *PrepareOK) {
 	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}
@@ -163,7 +163,7 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 		slog.Info("got PrepareOK for unknown op", "PrepareOK", req)
 		return
 	}
-	r.updateOKUpTo(req.OpNumber, req.BackupId)
+	r.updateOKUpTo(req.OpNumber, req.From)
 
 	// check inflight
 	for len(r.inflight) > 0 {
@@ -184,7 +184,7 @@ func (r *Replica) handlePrepareOK(_ ReplicaConfiguration, req *PrepareOK) {
 	}
 }
 
-func (r *Replica) handleCommit(_ ReplicaConfiguration, req *Commit) {
+func (r *Replica) handleCommit(req *Commit) {
 	if r.checkViewForNormalOperations(req.ViewNumber) {
 		return
 	}

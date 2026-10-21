@@ -1,6 +1,7 @@
 package vr
 
 import (
+	"fmt"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
@@ -12,11 +13,6 @@ const (
 	TickInterval        = 50 * time.Millisecond
 	PrimaryTimeoutTicks = 10
 )
-
-type ReplicaConfiguration struct {
-	ID       ReplicaNumber
-	Hostname string
-}
 
 type ReplicaStatus int
 
@@ -44,25 +40,15 @@ func NewClient() *Client {
 }
 
 type ReplicaState struct {
-	ClusterMembers []ReplicaConfiguration
+	ClusterMembers []ReplicaNumber
 	ReplicaNumber  ReplicaNumber
 	ViewNumber     ViewNumber
 	Status         ReplicaStatus
 	OpNumber       OpNumber
-	Log            []*ProcessRequest
+	Log            []*ClientRequest
 	CommitNumber   CommitNumber
 	ClientTable    map[ClientId]*Client
 	Role           ReplicaRole
-}
-
-func (rs *ReplicaState) GetConfiguration() ReplicaConfiguration {
-	for _, member := range rs.ClusterMembers {
-		if member.ID == rs.ReplicaNumber {
-			return member
-		}
-	}
-
-	return ReplicaConfiguration{}
 }
 
 func DefaultReplicaState() ReplicaState {
@@ -90,7 +76,7 @@ const (
 
 type Correspondent struct {
 	Type   CorrespondentType
-	Peer   ReplicaConfiguration
+	Peer   ReplicaNumber
 	Client ClientId
 }
 
@@ -101,21 +87,16 @@ func ClientCorrespondent(id ClientId) Correspondent {
 	}
 }
 
-func PeerCorrespondent(peer ReplicaConfiguration) Correspondent {
+func PeerCorrespondent(peer ReplicaNumber) Correspondent {
 	return Correspondent{
 		Type: CorrespondentPeer,
 		Peer: peer,
 	}
 }
 
-type Incoming struct {
-	From Correspondent
-	Req  Request
-}
-
 type Outgoing struct {
 	To  Correspondent
-	Req Request
+	Msg Message
 }
 
 type ReplyState struct {
@@ -127,7 +108,7 @@ type UpCall func(Payload) Payload
 
 type Replica struct {
 	state          ReplicaState
-	incoming       chan Incoming
+	incoming       chan Message
 	outgoing       chan Outgoing
 	outgoingBuffer []Outgoing
 	stop           chan bool
@@ -151,7 +132,7 @@ type Replica struct {
 	ticksWithGap int
 }
 
-func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
+func NewReplica(id ReplicaNumber, clusterMembers []ReplicaNumber,
 	upCall UpCall, seed uint64) *Replica {
 	state := DefaultReplicaState()
 	state.ReplicaNumber = id
@@ -159,7 +140,7 @@ func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
 
 	r := Replica{
 		state:         state,
-		incoming:      make(chan Incoming, 100),
+		incoming:      make(chan Message, 100),
 		outgoing:      make(chan Outgoing, 100),
 		stop:          make(chan bool, 1),
 		stopped:       make(chan bool, 1),
@@ -174,15 +155,12 @@ func NewReplica(id ReplicaNumber, clusterMembers []ReplicaConfiguration,
 	return &r
 }
 
-func (r *Replica) Request(req ProcessRequest) {
-	r.incoming <- Incoming{
-		Req:  &req,
-		From: ClientCorrespondent(req.ClientId),
-	}
+func (r *Replica) Request(req ClientRequest) {
+	r.incoming <- &req
 }
 
-func (r *Replica) Step(req Incoming) []Outgoing {
-	r.handleReq(req)
+func (r *Replica) Step(msg Message) []Outgoing {
+	r.handleMessage(msg)
 	return r.flush()
 }
 
@@ -199,8 +177,8 @@ loop:
 		select {
 		case <-r.stop:
 			break loop
-		case req := <-r.incoming:
-			r.send(r.Step(req))
+		case msg := <-r.incoming:
+			r.send(r.Step(msg))
 		case <-ticker.C:
 			r.send(r.Tick())
 		}
@@ -214,15 +192,15 @@ func (r *Replica) Stop() {
 	<-r.stopped
 }
 
-func (r *Replica) Queue(incoming Incoming) {
-	r.incoming <- incoming
+func (r *Replica) Queue(msg Message) {
+	r.incoming <- msg
 }
 
-func (r *Replica) peers() []ReplicaConfiguration {
-	peers := []ReplicaConfiguration{}
+func (r *Replica) peers() []ReplicaNumber {
+	peers := []ReplicaNumber{}
 
 	for _, peer := range r.state.ClusterMembers {
-		if peer.ID == r.state.ReplicaNumber {
+		if peer == r.state.ReplicaNumber {
 			continue
 		}
 		peers = append(peers, peer)
@@ -239,51 +217,45 @@ func (r *Replica) resilience() int {
 	return (len(r.state.ClusterMembers) - 1) / 2
 }
 
-func (r *Replica) handleReq(incoming Incoming) {
-	switch req := incoming.Req.(type) {
-	case *ProcessRequest:
-		slog.Info("handleReq ProcessRequest", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleProcessRequest(req, req.ClientId)
+func (r *Replica) handleMessage(msg Message) {
+	slog.Info("handleMessage", "replica", r.state.ReplicaNumber,
+		"type", fmt.Sprintf("%T", msg), "msg", msg)
+
+	switch msg := msg.(type) {
+	case *ClientRequest:
+		r.handleProcessRequest(msg)
 	case *Prepare:
-		slog.Info("handleReq Prepare", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handlePrepare(incoming.From.Peer, req)
+		r.handlePrepare(msg)
 	case *PrepareOK:
-		slog.Info("handleReq PrepareOK", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handlePrepareOK(incoming.From.Peer, req)
+		r.handlePrepareOK(msg)
 	case *Commit:
-		slog.Info("handleReq Commit", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleCommit(incoming.From.Peer, req)
+		r.handleCommit(msg)
 	case *StartViewChange:
-		slog.Info("handleReq StartViewChange", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleStartViewChange(incoming.From.Peer, req)
+		r.handleStartViewChange(msg)
 	case *DoViewChange:
-		slog.Info("handleReq DoViewChange", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleDoViewChange(incoming.From.Peer, req)
+		r.handleDoViewChange(msg)
 	case *StartView:
-		slog.Info("handleReq StartView", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleStartView(incoming.From.Peer, req)
+		r.handleStartView(msg)
 	case *GetState:
-		slog.Info("handleReq GetState", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleGetState(incoming.From.Peer, req)
+		r.handleGetState(msg)
 	case *NewState:
-		slog.Info("handleReq NewState", "replica", r.state.ReplicaNumber, "from", incoming.From, "req", incoming.Req)
-		r.handleNewState(incoming.From.Peer, req)
+		r.handleNewState(msg)
 	default:
-		slog.Error("received message that is not recognized", "req", incoming.Req)
+		slog.Error("received message that is not recognized", "msg", msg)
 	}
 }
 
-func (r *Replica) sendPeer(peer ReplicaConfiguration, req Request) {
+func (r *Replica) sendPeer(peer ReplicaNumber, msg Message) {
 	r.outgoingBuffer = append(r.outgoingBuffer, Outgoing{
 		To:  PeerCorrespondent(peer),
-		Req: req,
+		Msg: msg,
 	})
 }
 
-func (r *Replica) sendClient(client ClientId, req Request) {
+func (r *Replica) sendClient(client ClientId, msg Message) {
 	r.outgoingBuffer = append(r.outgoingBuffer, Outgoing{
 		To:  ClientCorrespondent(client),
-		Req: req,
+		Msg: msg,
 	})
 }
 
@@ -321,7 +293,7 @@ func (r *Replica) handleTick() {
 				replyState.ticksSince = 0
 
 				for _, peer := range r.peers() {
-					if replyState.oks[peer.ID] {
+					if replyState.oks[peer] {
 						continue
 					}
 
@@ -365,12 +337,12 @@ func (r *Replica) commitUpTo(commit CommitNumber) {
 		req := r.state.Log[r.state.CommitNumber-1]
 		response := r.upCall(req.Operation)
 
-		client := r.state.getClient(req.ClientId)
+		client := r.state.getClient(req.From)
 		client.LatestRequestNumber = req.RequestNumber
 		client.LatestResult = response
 
 		if r.state.Role == RolePrimary {
-			r.sendClient(req.ClientId, &ProcessReply{
+			r.sendClient(req.From, &ClientReply{
 				ViewNumber:    r.state.ViewNumber,
 				RequestNumber: req.RequestNumber,
 				Reply:         response,

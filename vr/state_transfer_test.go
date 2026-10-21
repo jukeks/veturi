@@ -5,12 +5,8 @@ import (
 	"testing"
 )
 
-func testConfigs() []ReplicaConfiguration {
-	return []ReplicaConfiguration{
-		{ID: 0, Hostname: "0"},
-		{ID: 1, Hostname: "1"},
-		{ID: 2, Hostname: "2"},
-	}
+func testMembers() []ReplicaNumber {
+	return []ReplicaNumber{0, 1, 2}
 }
 
 func getTestPrepare(view ViewNumber, op OpNumber, commit CommitNumber) *Prepare {
@@ -18,8 +14,8 @@ func getTestPrepare(view ViewNumber, op OpNumber, commit CommitNumber) *Prepare 
 		ViewNumber:   view,
 		OpNumber:     op,
 		CommitNumber: commit,
-		Operation: ProcessRequest{
-			ClientId:      555,
+		Operation: ClientRequest{
+			From:          555,
 			RequestNumber: RequestNumber(op),
 			Operation:     []byte{byte(op)},
 		},
@@ -29,7 +25,7 @@ func getTestPrepare(view ViewNumber, op OpNumber, commit CommitNumber) *Prepare 
 func getStates(out []Outgoing) []*GetState {
 	found := []*GetState{}
 	for _, o := range out {
-		if gs, ok := o.Req.(*GetState); ok {
+		if gs, ok := o.Msg.(*GetState); ok {
 			found = append(found, gs)
 		}
 	}
@@ -37,27 +33,26 @@ func getStates(out []Outgoing) []*GetState {
 }
 
 func TestLaterPrepareDuringStateTransfer(t *testing.T) {
-	configs := testConfigs()
-	backup := NewTestReplica(1, RoleBackup, configs)
-	primary := PeerCorrespondent(configs[2])
+	members := testMembers()
+	backup := NewTestReplica(1, RoleBackup, members)
 
 	// A Commit from view 2 moves the backup to view 2 and starts state transfer
-	out := backup.Step(Incoming{From: primary, Req: &Commit{ViewNumber: 2}})
+	out := backup.Step(&Commit{ViewNumber: 2})
 	if len(getStates(out)) != 1 {
 		t.Fatalf("expected one GetState, got %v", out)
 	}
 
 	// Prepare for op 5 arrives before NewState, so it is buffered
-	backup.Step(Incoming{From: primary, Req: getTestPrepare(2, 5, 0)})
+	backup.Step(getTestPrepare(2, 5, 0))
 
 	// NewState brings ops 1..5, including op 5
-	log := []*ProcessRequest{}
+	log := []*ClientRequest{}
 	for op := OpNumber(1); op <= 5; op++ {
 		log = append(log, &getTestPrepare(2, op, 0).Operation)
 	}
-	backup.Step(Incoming{From: primary, Req: &NewState{
+	backup.Step(&NewState{
 		ViewNumber: 2, Log: log, OpNumber: 5, CommitNumber: 0,
-	}})
+	})
 	if backup.state.OpNumber != 5 {
 		t.Fatalf("after NewState: op %d, want 5", backup.state.OpNumber)
 	}
@@ -66,25 +61,24 @@ func TestLaterPrepareDuringStateTransfer(t *testing.T) {
 	}
 
 	// Op 7 arrives before op 6. Both must end up in the log.
-	backup.Step(Incoming{From: primary, Req: getTestPrepare(2, 7, 0)})
-	backup.Step(Incoming{From: primary, Req: getTestPrepare(2, 6, 0)})
+	backup.Step(getTestPrepare(2, 7, 0))
+	backup.Step(getTestPrepare(2, 6, 0))
 	if backup.state.OpNumber != 7 {
 		t.Fatalf("after ops 7 and 6: op %d, want 7", backup.state.OpNumber)
 	}
 }
 
 func TestCommitBeyondLogRequestsState(t *testing.T) {
-	configs := testConfigs()
-	backup := NewTestReplica(1, RoleBackup, configs)
-	primary := PeerCorrespondent(configs[0]) // primary of view 0
+	members := testMembers()
+	backup := NewTestReplica(1, RoleBackup, members)
 
-	backup.Step(Incoming{From: primary, Req: getTestPrepare(0, 1, 0)})
+	backup.Step(getTestPrepare(0, 1, 0))
 	if backup.state.OpNumber != 1 {
 		t.Fatalf("op %d, want 1", backup.state.OpNumber)
 	}
 
 	// The primary has committed ops up to 3, but the backup has only op 1.
-	out := backup.Step(Incoming{From: primary, Req: &Commit{ViewNumber: 0, CommitNumber: 3}})
+	out := backup.Step(&Commit{ViewNumber: 0, CommitNumber: 3})
 	gs := getStates(out)
 	if len(gs) != 1 {
 		t.Fatalf("expected one GetState, got %v", out)
@@ -97,7 +91,7 @@ func TestCommitBeyondLogRequestsState(t *testing.T) {
 	}
 
 	// The next tick must not send a second GetState.
-	out = backup.Step(Incoming{From: primary, Req: &Commit{ViewNumber: 0, CommitNumber: 3}})
+	out = backup.Step(&Commit{ViewNumber: 0, CommitNumber: 3})
 	if n := len(getStates(out)); n != 0 {
 		t.Errorf("second Commit sent %d GetState, want 0", n)
 	}
@@ -144,12 +138,11 @@ func FuzzStateTransfer(f *testing.F) {
 }
 
 func TestEarlyPrepareTimeout(t *testing.T) {
-	configs := testConfigs()
-	backup := NewTestReplica(1, RoleBackup, configs)
-	primary := PeerCorrespondent(configs[0])
+	members := testMembers()
+	backup := NewTestReplica(1, RoleBackup, members)
 
 	// op = 2, can't process yet
-	backup.Step(Incoming{From: primary, Req: getTestPrepare(0, 2, 0)})
+	backup.Step(getTestPrepare(0, 2, 0))
 
 	stateRequested := false
 	for range PrimaryTimeoutTicks - 1 {
@@ -166,15 +159,14 @@ func TestEarlyPrepareTimeout(t *testing.T) {
 }
 
 func TestMissedStartView(t *testing.T) {
-	configs := testConfigs()
-	backup := NewTestReplica(1, RoleBackup, configs)
-	primary := PeerCorrespondent(configs[0])
+	members := testMembers()
+	backup := NewTestReplica(1, RoleBackup, members)
 
-	backup.Step(Incoming{From: primary, Req: &StartViewChange{
-		ViewNumber:    2,
-		ReplicaNumber: primary.Peer.ID,
-	}})
-	out := backup.Step(Incoming{From: primary, Req: getTestPrepare(2, 1, 0)})
+	backup.Step(&StartViewChange{
+		ViewNumber: 2,
+		From:       0,
+	})
+	out := backup.Step(getTestPrepare(2, 1, 0))
 	gs := getStates(out)
 	if len(gs) == 0 {
 		t.Fatal("getstate was not requested")

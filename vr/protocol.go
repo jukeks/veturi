@@ -1,18 +1,18 @@
 package vr
 
-type Request interface {
-	request()
+type Message interface {
+	message()
 }
 
 /* Normal operations */
 
-type ProcessRequest struct {
+type ClientRequest struct {
 	RequestNumber RequestNumber
-	ClientId      ClientId
+	From          ClientId
 	Operation     Payload
 }
 
-type ProcessReply struct {
+type ClientReply struct {
 	ViewNumber    ViewNumber
 	RequestNumber RequestNumber
 	Reply         Payload
@@ -26,11 +26,13 @@ type (
 	ReplicaNumber uint64
 	ClientId      uint64
 	CommitNumber  uint64
+	Nonce         []byte
+	Log           []*ClientRequest
 )
 
 type Prepare struct {
 	ViewNumber   ViewNumber
-	Operation    ProcessRequest
+	Operation    ClientRequest
 	OpNumber     OpNumber
 	CommitNumber CommitNumber
 }
@@ -38,7 +40,7 @@ type Prepare struct {
 type PrepareOK struct {
 	ViewNumber ViewNumber
 	OpNumber   OpNumber
-	BackupId   ReplicaNumber
+	From       ReplicaNumber
 }
 
 type Commit struct {
@@ -49,22 +51,22 @@ type Commit struct {
 /* View Changes */
 
 type StartViewChange struct {
-	ViewNumber    ViewNumber
-	ReplicaNumber ReplicaNumber
+	ViewNumber ViewNumber
+	From       ReplicaNumber
 }
 
 type DoViewChange struct {
-	ViewNumber    ViewNumber
-	Log           []*ProcessRequest
-	LastView      ViewNumber
-	OpNumber      OpNumber
-	CommitNumber  CommitNumber
-	ReplicaNumber ReplicaNumber
+	ViewNumber   ViewNumber
+	Log          Log
+	LastView     ViewNumber
+	OpNumber     OpNumber
+	CommitNumber CommitNumber
+	From         ReplicaNumber
 }
 
 type StartView struct {
 	ViewNumber   ViewNumber
-	Log          []*ProcessRequest
+	Log          Log
 	OpNumber     OpNumber
 	CommitNumber CommitNumber
 }
@@ -74,23 +76,41 @@ type StartView struct {
 type GetState struct {
 	ViewNumber ViewNumber
 	OpNumber   OpNumber
-	BackupId   ReplicaNumber
+	From       ReplicaNumber
 }
 
 type NewState struct {
 	ViewNumber   ViewNumber
-	Log          []*ProcessRequest
+	Log          Log
 	OpNumber     OpNumber
 	CommitNumber CommitNumber
 }
 
-func (*Prepare) request()         {}
-func (*PrepareOK) request()       {}
-func (*Commit) request()          {}
-func (*ProcessRequest) request()  {}
-func (*ProcessReply) request()    {}
-func (*StartViewChange) request() {}
-func (*DoViewChange) request()    {}
-func (*StartView) request()       {}
-func (*GetState) request()        {}
-func (*NewState) request()        {}
+/* Recovery */
+
+type Recovery struct {
+	From  ReplicaNumber
+	Nonce Nonce
+}
+
+type RecoveryResponse struct {
+	ViewNumber   ViewNumber
+	Nonce        Nonce
+	Log          Log
+	OpNumber     OpNumber
+	CommitNumber CommitNumber
+	From         ReplicaNumber
+}
+
+func (*Prepare) message()          {}
+func (*PrepareOK) message()        {}
+func (*Commit) message()           {}
+func (*ClientRequest) message()    {}
+func (*ClientReply) message()      {}
+func (*StartViewChange) message()  {}
+func (*DoViewChange) message()     {}
+func (*StartView) message()        {}
+func (*GetState) message()         {}
+func (*NewState) message()         {}
+func (*Recovery) message()         {}
+func (*RecoveryResponse) message() {}
