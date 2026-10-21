@@ -6,11 +6,13 @@ Viewstamped Replication (VR) library
 
 * Normal operations
 * View Changes
+* Recovery
+* GetState
 
 ## Missing
 
-* Recovery
-* GetState
+* Optimizations
+* Snapshots
 
 # References
 
